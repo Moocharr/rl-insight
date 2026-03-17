@@ -1,7 +1,7 @@
 # Insight Framework
 
 <div align="center">
- <img src="https://github.com/verl-project/rl-insight/blob/main/assets/rl_insight_framework.svg" width="600" alt="rl-insight-arch.png">
+ <img src="https://raw.githubusercontent.com/verl-project/rl-insight/main/assets/rl_insight_framework.svg" width="600" alt="rl-insight-arch.png">
 </div>
 
 The green data modules and blue function modules shown in the diagram will be included in RL-Insight. The red modules (CollectController/Collector) have already been implemented in [verl.DistProfiler](https://verl.readthedocs.io/en/latest/perf/verl_profiler_system.html) and will not be integrated into RL-Insight for now.
