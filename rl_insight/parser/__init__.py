@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .memory_parser import MemoryClusterParser
 from .mstx_parser import MstxClusterParser
 from .torch_parser import TorchClusterParser
 from .parser import (
@@ -22,6 +23,7 @@ from .parser import (
 __all__ = [
     "BaseClusterParser",
     "get_cluster_parser_cls",
+    "MemoryClusterParser",
     "MstxClusterParser",
     "TorchClusterParser",
 ]
