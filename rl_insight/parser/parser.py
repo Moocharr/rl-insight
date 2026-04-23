@@ -24,6 +24,8 @@ from rl_insight.utils.schema import Constant, DataMap, EventRow
 
 
 class BaseClusterParser(ABC):
+    sort_key: str = "start_time_ms"
+
     def __init__(self, params) -> None:
         self.events_summary: Optional[pd.DataFrame] = None
         rank_list = params.get(Constant.RANK_LIST, "all")
@@ -114,7 +116,7 @@ class BaseClusterParser(ABC):
             logger.warning("No valid data collected from any rank")
             return
 
-        reduce_results.sort(key=lambda x: x["start_time_ms"])
+        reduce_results.sort(key=lambda x: x[self.sort_key])
         self.events_summary = pd.DataFrame(reduce_results)
 
     def clean_data(self) -> None:

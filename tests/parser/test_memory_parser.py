@@ -1,86 +1,16 @@
-import csv
 import json
-import os
 import pytest
 
 from rl_insight.parser import MemoryClusterParser, get_cluster_parser_cls
 from rl_insight.parser.parser import CLUSTER_PARSER_REGISTRY
 from rl_insight.utils.schema import Constant
-
-
-def _write_trace_view_json(path, events):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(events, f)
-
-
-def _write_operator_memory_csv(path, rows):
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            "Name", "Size(KB)", "Allocation Time(us)", "Release Time(us)",
-            "Active Release Time(us)", "Duration(us)",
-            "Allocation Total Allocated(MB)", "Allocation Total Reserved(MB)",
-            "Allocation Total Active(MB)", "Release Total Allocated(MB)",
-            "Release Total Reserved(MB)", "Release Total Active(MB)",
-            "Stream Ptr", "Device Type",
-        ])
-        for row in rows:
-            writer.writerow(row)
-
-
-def _create_ascend_profile_dir(tmp_path, role="actor_update", rank_id=0,
-                                trace_events=None, memory_rows=None):
-    ascend_pt_dir = tmp_path / f"{role}_ascend_pt"
-    ascend_pt_dir.mkdir()
-    profiler_info = ascend_pt_dir / f"profiler_info_{rank_id}.json"
-    profiler_info.write_text("{}")
-    metadata = ascend_pt_dir / "profiler_metadata.json"
-    metadata.write_text(json.dumps({"role": role}))
-
-    output_dir = ascend_pt_dir / "ASCEND_PROFILER_OUTPUT"
-    output_dir.mkdir()
-
-    if trace_events is not None:
-        _write_trace_view_json(str(output_dir / "trace_view.json"), trace_events)
-    if memory_rows is not None:
-        _write_operator_memory_csv(str(output_dir / "operator_memory.csv"), memory_rows)
-
-    return str(tmp_path)
-
-
-SAMPLE_TRACE_EVENTS = [
-    {
-        "ph": "X", "name": "aten::empty", "cat": "cpu_op",
-        "pid": 1, "tid": 1, "ts": "1000000.0", "dur": 500.0,
-        "args": {"Call stack": "fsdp2.py(112): train_batch;\r\nmodel.py(50): forward"},
-    },
-    {
-        "ph": "X", "name": "aten::matmul", "cat": "cpu_op",
-        "pid": 1, "tid": 1, "ts": "2000000.0", "dur": 1000.0,
-        "args": {"Call stack": "model.py(60): forward;\r\nlayer.py(30): __call__"},
-    },
-    {
-        "ph": "X", "name": "aten::empty", "cat": "cpu_op",
-        "pid": 1, "tid": 1, "ts": "3000000.0", "dur": 300.0,
-        "args": {"Call stack": "fsdp2.py(120): train_batch;\r\nmodel.py(55): forward"},
-    },
-    {
-        "ph": "X", "name": "aten::relu", "cat": "kernel",
-        "pid": 1, "tid": 1, "ts": "4000000.0", "dur": 200.0,
-    },
-    {
-        "ph": "X", "name": "aten::cumsum", "cat": "cpu_op",
-        "pid": 1, "tid": 1, "ts": "5000000.0", "dur": 800.0,
-    },
-]
-
-SAMPLE_MEMORY_ROWS = [
-    ["aten::empty", 1024.0, "1000100.0", "", "", "", 100.0, 200.0, 50.0, "", "", "", "123", "NPU:0"],
-    ["aten::empty", 2048.0, "3000050.0", "", "", "", 200.0, 300.0, 100.0, "", "", "", "123", "NPU:0"],
-    ["aten::matmul", 4096.0, "2000500.0", "", "", "", 300.0, 400.0, 150.0, "", "", "", "123", "NPU:0"],
-    ["aten::unknown", 512.0, "6000000.0", "", "", "", 50.0, 100.0, 25.0, "", "", "", "123", "NPU:0"],
-    ["aten::empty", -1024.0, "7000000.0", "", "", "", 100.0, 200.0, 50.0, "", "", "", "123", "NPU:0"],
-]
+from .conftest import (
+    write_operator_memory_csv,
+    write_trace_view_json,
+    create_ascend_profile_dir,
+    SAMPLE_TRACE_EVENTS,
+    SAMPLE_MEMORY_ROWS,
+)
 
 
 # =============================================================================
@@ -111,7 +41,7 @@ class TestBuildCallStackIndex:
             {"ph": "X", "name": "op2", "cat": "kernel", "ts": "2000.0", "dur": 200.0,
              "args": {"Call stack": "stack2"}},
         ]
-        _write_trace_view_json(str(tmp_path / "trace_view.json"), events)
+        write_trace_view_json(str(tmp_path / "trace_view.json"), events)
 
         parser = MemoryClusterParser({Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"})
         index = parser._build_call_stack_index(str(tmp_path / "trace_view.json"))
@@ -127,7 +57,7 @@ class TestBuildCallStackIndex:
              "args": {}},
             {"ph": "X", "name": "op3", "cat": "cpu_op", "ts": "3000.0", "dur": 300.0},
         ]
-        _write_trace_view_json(str(tmp_path / "trace_view.json"), events)
+        write_trace_view_json(str(tmp_path / "trace_view.json"), events)
 
         parser = MemoryClusterParser({Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"})
         index = parser._build_call_stack_index(str(tmp_path / "trace_view.json"))
@@ -145,13 +75,13 @@ class TestBuildCallStackIndex:
             {"ph": "X", "name": "aten::matmul", "cat": "cpu_op", "ts": "3000.0", "dur": 300.0,
              "args": {"Call stack": "stack3"}},
         ]
-        _write_trace_view_json(str(tmp_path / "trace_view.json"), events)
+        write_trace_view_json(str(tmp_path / "trace_view.json"), events)
 
         parser = MemoryClusterParser({Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"})
         index = parser._build_call_stack_index(str(tmp_path / "trace_view.json"))
 
-        assert len(index["aten::empty"]) == 2
-        assert len(index["aten::matmul"]) == 1
+        assert len(index["aten::empty"]["entries"]) == 2
+        assert len(index["aten::matmul"]["entries"]) == 1
 
     def test_sorted_by_ts(self, tmp_path):
         events = [
@@ -162,16 +92,15 @@ class TestBuildCallStackIndex:
             {"ph": "X", "name": "op1", "cat": "cpu_op", "ts": "2000.0", "dur": 200.0,
              "args": {"Call stack": "stack2"}},
         ]
-        _write_trace_view_json(str(tmp_path / "trace_view.json"), events)
+        write_trace_view_json(str(tmp_path / "trace_view.json"), events)
 
         parser = MemoryClusterParser({Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"})
         index = parser._build_call_stack_index(str(tmp_path / "trace_view.json"))
 
-        ts_values = [e["ts"] for e in index["op1"]]
-        assert ts_values == [1000.0, 2000.0, 3000.0]
+        assert index["op1"]["ts_list"] == [1000.0, 2000.0, 3000.0]
 
     def test_empty_json(self, tmp_path):
-        _write_trace_view_json(str(tmp_path / "trace_view.json"), [])
+        write_trace_view_json(str(tmp_path / "trace_view.json"), [])
 
         parser = MemoryClusterParser({Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"})
         index = parser._build_call_stack_index(str(tmp_path / "trace_view.json"))
@@ -188,13 +117,19 @@ class TestMatchCallStack:
     def setup_method(self):
         self.parser = MemoryClusterParser({Constant.INPUT_PATH: "/tmp", Constant.RANK_LIST: "all"})
         self.index = {
-            "aten::empty": [
-                {"ts": 1000.0, "dur": 500.0, "call_stack": "fsdp2.py(10): func1;\r\nmodel.py(20): func2"},
-                {"ts": 3000.0, "dur": 300.0, "call_stack": "fsdp2.py(30): func3;\r\nmodel.py(40): func4"},
-            ],
-            "aten::matmul": [
-                {"ts": 5000.0, "dur": 1000.0, "call_stack": "model.py(50): forward"},
-            ],
+            "aten::empty": {
+                "ts_list": [1000.0, 3000.0],
+                "entries": [
+                    {"ts": 1000.0, "dur": 500.0, "call_stack": "fsdp2.py(10): func1;\r\nmodel.py(20): func2"},
+                    {"ts": 3000.0, "dur": 300.0, "call_stack": "fsdp2.py(30): func3;\r\nmodel.py(40): func4"},
+                ],
+            },
+            "aten::matmul": {
+                "ts_list": [5000.0],
+                "entries": [
+                    {"ts": 5000.0, "dur": 1000.0, "call_stack": "model.py(50): forward"},
+                ],
+            },
         }
 
     def test_match_found(self):
@@ -240,14 +175,17 @@ class TestMatchCallStack:
 class TestParseOperatorMemory:
     def test_parse_basic(self, tmp_path):
         csv_path = str(tmp_path / "operator_memory.csv")
-        _write_operator_memory_csv(csv_path, [
+        write_operator_memory_csv(csv_path, [
             ["aten::empty", 1024.0, "1000100.0", "", "", "", 100.0, 200.0, 50.0, "", "", "", "123", "NPU:0"],
         ])
 
         index = {
-            "aten::empty": [
-                {"ts": 1000000.0, "dur": 500.0, "call_stack": "fsdp2.py(10): func;\r\nmodel.py(20): func2"},
-            ],
+            "aten::empty": {
+                "ts_list": [1000000.0],
+                "entries": [
+                    {"ts": 1000000.0, "dur": 500.0, "call_stack": "fsdp2.py(10): func;\r\nmodel.py(20): func2"},
+                ],
+            },
         }
 
         parser = MemoryClusterParser({Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"})
@@ -266,14 +204,17 @@ class TestParseOperatorMemory:
 
     def test_parse_negative_size(self, tmp_path):
         csv_path = str(tmp_path / "operator_memory.csv")
-        _write_operator_memory_csv(csv_path, [
+        write_operator_memory_csv(csv_path, [
             ["aten::empty", -1024.0, "1000100.0", "", "", "", 100.0, 200.0, 50.0, "", "", "", "123", "NPU:0"],
         ])
 
         index = {
-            "aten::empty": [
-                {"ts": 1000000.0, "dur": 500.0, "call_stack": "stack"},
-            ],
+            "aten::empty": {
+                "ts_list": [1000000.0],
+                "entries": [
+                    {"ts": 1000000.0, "dur": 500.0, "call_stack": "stack"},
+                ],
+            },
         }
 
         parser = MemoryClusterParser({Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"})
@@ -284,11 +225,11 @@ class TestParseOperatorMemory:
 
     def test_parse_duration_conversion(self, tmp_path):
         csv_path = str(tmp_path / "operator_memory.csv")
-        _write_operator_memory_csv(csv_path, [
+        write_operator_memory_csv(csv_path, [
             ["aten::empty", 1024.0, "1000100.0", "", "", "5000.0", 100.0, 200.0, 50.0, "", "", "", "123", "NPU:0"],
         ])
 
-        index = {"aten::empty": [{"ts": 1000000.0, "dur": 500.0, "call_stack": "stack"}]}
+        index = {"aten::empty": {"ts_list": [1000000.0], "entries": [{"ts": 1000000.0, "dur": 500.0, "call_stack": "stack"}]}}
 
         parser = MemoryClusterParser({Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"})
         results = parser._parse_operator_memory(csv_path, index, rank_id=0, role="actor_update")
@@ -297,11 +238,11 @@ class TestParseOperatorMemory:
 
     def test_parse_empty_duration(self, tmp_path):
         csv_path = str(tmp_path / "operator_memory.csv")
-        _write_operator_memory_csv(csv_path, [
+        write_operator_memory_csv(csv_path, [
             ["aten::empty", 1024.0, "1000100.0", "", "", "", 100.0, 200.0, 50.0, "", "", "", "123", "NPU:0"],
         ])
 
-        index = {"aten::empty": [{"ts": 1000000.0, "dur": 500.0, "call_stack": "stack"}]}
+        index = {"aten::empty": {"ts_list": [1000000.0], "entries": [{"ts": 1000000.0, "dur": 500.0, "call_stack": "stack"}]}}
 
         parser = MemoryClusterParser({Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"})
         results = parser._parse_operator_memory(csv_path, index, rank_id=0, role="actor_update")
@@ -310,7 +251,7 @@ class TestParseOperatorMemory:
 
     def test_parse_unmatched_call_stack(self, tmp_path):
         csv_path = str(tmp_path / "operator_memory.csv")
-        _write_operator_memory_csv(csv_path, [
+        write_operator_memory_csv(csv_path, [
             ["aten::unknown", 512.0, "1000100.0", "", "", "", 50.0, 100.0, 25.0, "", "", "", "123", "NPU:0"],
         ])
 
@@ -330,7 +271,7 @@ class TestParseOperatorMemory:
 
 class TestMemoryParserEndToEnd:
     def test_full_pipeline(self, tmp_path):
-        input_path = _create_ascend_profile_dir(
+        input_path = create_ascend_profile_dir(
             tmp_path, role="actor_update", rank_id=0,
             trace_events=SAMPLE_TRACE_EVENTS,
             memory_rows=SAMPLE_MEMORY_ROWS,
@@ -373,12 +314,12 @@ class TestMemoryParserEndToEnd:
         assert len(release_events) == 1
 
     def test_multiple_roles(self, tmp_path):
-        _create_ascend_profile_dir(
+        create_ascend_profile_dir(
             tmp_path, role="actor_update", rank_id=0,
             trace_events=SAMPLE_TRACE_EVENTS,
             memory_rows=SAMPLE_MEMORY_ROWS,
         )
-        _create_ascend_profile_dir(
+        create_ascend_profile_dir(
             tmp_path, role="rollout_generate", rank_id=1,
             trace_events=SAMPLE_TRACE_EVENTS,
             memory_rows=SAMPLE_MEMORY_ROWS,
@@ -401,7 +342,7 @@ class TestMemoryParserEndToEnd:
         (ascend_pt_dir / "profiler_metadata.json").write_text(json.dumps({"role": "actor"}))
         output_dir = ascend_pt_dir / "ASCEND_PROFILER_OUTPUT"
         output_dir.mkdir()
-        _write_operator_memory_csv(str(output_dir / "operator_memory.csv"), SAMPLE_MEMORY_ROWS)
+        write_operator_memory_csv(str(output_dir / "operator_memory.csv"), SAMPLE_MEMORY_ROWS)
 
         parser = MemoryClusterParser(
             {Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"}
@@ -417,7 +358,7 @@ class TestMemoryParserEndToEnd:
         (ascend_pt_dir / "profiler_metadata.json").write_text(json.dumps({"role": "actor"}))
         output_dir = ascend_pt_dir / "ASCEND_PROFILER_OUTPUT"
         output_dir.mkdir()
-        _write_trace_view_json(str(output_dir / "trace_view.json"), SAMPLE_TRACE_EVENTS)
+        write_trace_view_json(str(output_dir / "trace_view.json"), SAMPLE_TRACE_EVENTS)
 
         parser = MemoryClusterParser(
             {Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"}
@@ -435,7 +376,7 @@ class TestMemoryParserEndToEnd:
         assert len(events) == 0
 
     def test_non_all_rank_list(self, tmp_path):
-        _create_ascend_profile_dir(
+        create_ascend_profile_dir(
             tmp_path, role="actor_update", rank_id=0,
             trace_events=SAMPLE_TRACE_EVENTS,
             memory_rows=SAMPLE_MEMORY_ROWS,
