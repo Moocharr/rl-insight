@@ -15,16 +15,17 @@
 import os
 import stat
 from dataclasses import dataclass
-from typing import TypedDict, Literal
+from typing import TypedDict, Literal, Optional
 
 
 class DataMap(TypedDict):
     rank_id: int
     role: str
     profiler_data_path: str
+    step: Optional[int]
 
 
-class EventRow(TypedDict):
+class EventRow(TypedDict, total=False):
     name: str
     role: str
     domain: str
@@ -33,6 +34,36 @@ class EventRow(TypedDict):
     duration_ms: float
     rank_id: int
     tid: int | str
+
+
+class GmmRow(TypedDict, total=False):
+    role: str
+    rank_id: int
+    step: int
+    stage: int
+    expert_index: int
+    load: float
+
+
+# Required DataFrame columns for SUMMARY_EVENT validation (timeline visualizer).
+# EventRow may also carry optional fields (e.g. domain, duration_ms, tid); we only
+# enforce the minimum columns the downstream pipeline needs, not full TypedDict parity.
+EVENTKEYS: tuple[str, ...] = (
+    "role",
+    "name",
+    "rank_id",
+    "start_time_ms",
+    "end_time_ms",
+)
+# Required columns for GMM_SUMMARY; aligns with GmmRow fields used by gmm_heatmap.
+GMMKEYS: tuple[str, ...] = (
+    "role",
+    "rank_id",
+    "step",
+    "stage",
+    "expert_index",
+    "load",
+)
 
 
 @dataclass

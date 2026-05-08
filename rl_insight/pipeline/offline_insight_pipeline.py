@@ -36,12 +36,12 @@ class OfflineInsightPipeline:
         self.visualizer = visualizer_cls(visualizer_config)
 
     def _prepare_parser_config(self):
-        return {
-            Constant.RANK_LIST: self.config.rank_list,
-        }
+        config = vars(self.config).copy()
+        config[Constant.RANK_LIST] = config.get("rank_list", "all")
+        return config
 
     def _prepare_visualizer_config(self):
-        return {"output_path": self.config.output_path}
+        return vars(self.config).copy()
 
     def run(self):
         if self.input_data_type != self.parser.input_type:
