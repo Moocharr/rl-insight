@@ -24,6 +24,7 @@ dependencies = [
   "opentelemetry-sdk",
   "opentelemetry-exporter-otlp-proto-http",
   "pyyaml",
+  "ijson",
 ]
 
 [project.scripts]
@@ -49,4 +50,3 @@ experimental = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-

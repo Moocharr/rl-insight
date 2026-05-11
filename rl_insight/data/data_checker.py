@@ -44,11 +44,13 @@ class DataEnum(Enum):
     MULTI_JSON_MSTX = "multi_json_mstx"
     MULTI_JSON_TORCH = "multi_json_torch"
     MULTI_JSON_NVTX = "multi_json_nvtx"
+    ASCEND_MEMORY = "ascend_memory"
     VERL_LOG = "verl_log"
     GMM_DATA = "gmm_data"
     # output data type of parser, input data type of visualizer
     SUMMARY_EVENT = "summary_event"
     GMM_SUMMARY = "gmm_summary"
+    SUMMARY_MEMORY_EVENT = "summary_memory_event"
     # other data type
     UNKNOWN = "unknown"
 
