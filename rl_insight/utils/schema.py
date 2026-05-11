@@ -35,6 +35,21 @@ class EventRow(TypedDict):
     tid: int | str
 
 
+class MemoryEventRow(TypedDict):
+    name: str
+    role: str
+    rank_id: int
+    call_stack: str
+    call_stack_top: str
+    size_kb: float
+    allocation_time_ms: float
+    duration_ms: float
+    total_allocated_mb: float
+    total_reserved_mb: float
+    total_active_mb: float
+    device_type: str
+
+
 @dataclass
 class FigureConfig:
     title_prefix: str
