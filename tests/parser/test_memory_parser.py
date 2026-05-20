@@ -150,8 +150,8 @@ class TestBuildCallStackIndex:
         parser = MemoryClusterParser({Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"})
         index = parser._build_call_stack_index(str(tmp_path / "trace_view.json"))
 
-        assert len(index["aten::empty"]) == 2
-        assert len(index["aten::matmul"]) == 1
+        assert len(index["aten::empty"]["entries"]) == 2
+        assert len(index["aten::matmul"]["entries"]) == 1
 
     def test_sorted_by_ts(self, tmp_path):
         events = [
@@ -167,7 +167,7 @@ class TestBuildCallStackIndex:
         parser = MemoryClusterParser({Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"})
         index = parser._build_call_stack_index(str(tmp_path / "trace_view.json"))
 
-        ts_values = [e["ts"] for e in index["op1"]]
+        ts_values = index["op1"]["ts_list"]
         assert ts_values == [1000.0, 2000.0, 3000.0]
 
     def test_empty_json(self, tmp_path):
@@ -188,13 +188,19 @@ class TestMatchCallStack:
     def setup_method(self):
         self.parser = MemoryClusterParser({Constant.INPUT_PATH: "/tmp", Constant.RANK_LIST: "all"})
         self.index = {
-            "aten::empty": [
-                {"ts": 1000.0, "dur": 500.0, "call_stack": "fsdp2.py(10): func1;\r\nmodel.py(20): func2"},
-                {"ts": 3000.0, "dur": 300.0, "call_stack": "fsdp2.py(30): func3;\r\nmodel.py(40): func4"},
-            ],
-            "aten::matmul": [
-                {"ts": 5000.0, "dur": 1000.0, "call_stack": "model.py(50): forward"},
-            ],
+            "aten::empty": {
+                "entries": [
+                    {"ts": 1000.0, "dur": 500.0, "call_stack": "fsdp2.py(10): func1;\r\nmodel.py(20): func2"},
+                    {"ts": 3000.0, "dur": 300.0, "call_stack": "fsdp2.py(30): func3;\r\nmodel.py(40): func4"},
+                ],
+                "ts_list": [1000.0, 3000.0],
+            },
+            "aten::matmul": {
+                "entries": [
+                    {"ts": 5000.0, "dur": 1000.0, "call_stack": "model.py(50): forward"},
+                ],
+                "ts_list": [5000.0],
+            },
         }
 
     def test_match_found(self):
@@ -245,9 +251,12 @@ class TestParseOperatorMemory:
         ])
 
         index = {
-            "aten::empty": [
-                {"ts": 1000000.0, "dur": 500.0, "call_stack": "fsdp2.py(10): func;\r\nmodel.py(20): func2"},
-            ],
+            "aten::empty": {
+                "entries": [
+                    {"ts": 1000000.0, "dur": 500.0, "call_stack": "fsdp2.py(10): func;\r\nmodel.py(20): func2"},
+                ],
+                "ts_list": [1000000.0],
+            },
         }
 
         parser = MemoryClusterParser({Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"})
@@ -257,7 +266,7 @@ class TestParseOperatorMemory:
         row = results[0]
         assert row["name"] == "aten::empty"
         assert row["size_kb"] == 1024.0
-        assert row["allocation_time_ms"] == pytest.approx(1000.1)
+        assert row["start_time_ms"] == pytest.approx(1000.1)
         assert row["call_stack"] == "fsdp2.py(10): func;\r\nmodel.py(20): func2"
         assert row["call_stack_top"] == "fsdp2.py(10): func"
         assert row["role"] == "actor_update"
@@ -271,9 +280,12 @@ class TestParseOperatorMemory:
         ])
 
         index = {
-            "aten::empty": [
-                {"ts": 1000000.0, "dur": 500.0, "call_stack": "stack"},
-            ],
+            "aten::empty": {
+                "entries": [
+                    {"ts": 1000000.0, "dur": 500.0, "call_stack": "stack"},
+                ],
+                "ts_list": [1000000.0],
+            },
         }
 
         parser = MemoryClusterParser({Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"})
@@ -288,7 +300,7 @@ class TestParseOperatorMemory:
             ["aten::empty", 1024.0, "1000100.0", "", "", "5000.0", 100.0, 200.0, 50.0, "", "", "", "123", "NPU:0"],
         ])
 
-        index = {"aten::empty": [{"ts": 1000000.0, "dur": 500.0, "call_stack": "stack"}]}
+        index = {"aten::empty": {"entries": [{"ts": 1000000.0, "dur": 500.0, "call_stack": "stack"}], "ts_list": [1000000.0]}}
 
         parser = MemoryClusterParser({Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"})
         results = parser._parse_operator_memory(csv_path, index, rank_id=0, role="actor_update")
@@ -301,7 +313,7 @@ class TestParseOperatorMemory:
             ["aten::empty", 1024.0, "1000100.0", "", "", "", 100.0, 200.0, 50.0, "", "", "", "123", "NPU:0"],
         ])
 
-        index = {"aten::empty": [{"ts": 1000000.0, "dur": 500.0, "call_stack": "stack"}]}
+        index = {"aten::empty": {"entries": [{"ts": 1000000.0, "dur": 500.0, "call_stack": "stack"}], "ts_list": [1000000.0]}}
 
         parser = MemoryClusterParser({Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"})
         results = parser._parse_operator_memory(csv_path, index, rank_id=0, role="actor_update")
@@ -321,6 +333,56 @@ class TestParseOperatorMemory:
 
         assert results[0]["call_stack"] == ""
         assert results[0]["call_stack_top"] == ""
+
+    def test_parse_empty_allocation_total_fields(self, tmp_path):
+        csv_path = str(tmp_path / "operator_memory.csv")
+        _write_operator_memory_csv(csv_path, [
+            ["aten::empty", -1024.0, "1000100.0", "2000100.0", "2000100.0", "1000.0", "", "", "", "", "", "", "123", "NPU:0"],
+        ])
+
+        index = {"aten::empty": {"entries": [{"ts": 1000000.0, "dur": 500.0, "call_stack": "stack"}], "ts_list": [1000000.0]}}
+
+        parser = MemoryClusterParser({Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"})
+        results = parser._parse_operator_memory(csv_path, index, rank_id=0, role="actor_update")
+
+        assert len(results) == 1
+        assert results[0]["total_allocated_mb"] == 0.0
+        assert results[0]["total_reserved_mb"] == 0.0
+        assert results[0]["total_active_mb"] == 0.0
+
+
+# =============================================================================
+# _extract_timestamp_key Tests
+# =============================================================================
+
+
+class TestExtractTimestampKey:
+    def test_timestamp_format(self):
+        assert MemoryClusterParser._extract_timestamp_key(
+            "/data/actor/20250101_120000_ascend_pt"
+        ) == "20250101_120000"
+
+    def test_legacy_role_format(self):
+        assert MemoryClusterParser._extract_timestamp_key(
+            "/data/actor_update_ascend_pt"
+        ) == "actor"
+
+    def test_short_name(self):
+        assert MemoryClusterParser._extract_timestamp_key("abc_ascend_pt") == "abc"
+
+    def test_very_short_name(self):
+        assert MemoryClusterParser._extract_timestamp_key("ascend_pt") == "ascend_pt"
+
+    def test_sort_order(self):
+        paths = [
+            "/data/role/20250102_010000_ascend_pt",
+            "/data/role/20250101_230000_ascend_pt",
+            "/data/role/20250101_120000_ascend_pt",
+        ]
+        sorted_paths = sorted(paths, key=MemoryClusterParser._extract_timestamp_key)
+        assert sorted_paths[0].endswith("20250101_120000_ascend_pt")
+        assert sorted_paths[1].endswith("20250101_230000_ascend_pt")
+        assert sorted_paths[2].endswith("20250102_010000_ascend_pt")
 
 
 # =============================================================================

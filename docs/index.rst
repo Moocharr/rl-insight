@@ -16,6 +16,7 @@ and visualization.
    Architecture <overview/architecture>
    RL Timeline quickstart <overview/RL_Timeline_quickstart>
    GMM Expert Load visualization quickstart <overview/gmm_heatmap_quickstart>
+   Memory Parser quickstart <overview/memory_parser_quickstart>
 
 .. toctree::
    :maxdepth: 2
@@ -36,6 +37,7 @@ and visualization.
    Extending Guide <developer_guides/extending_guide>
    BaseClusterParser Interface<developer_guides/baseclusterparser_interface>
    DataRule Extending Guide <developer_guides/rule_extending_guide>
+   Memory Parser Guide <developer_guides/memory_parser_guide>
 
 Contribution
 -------------

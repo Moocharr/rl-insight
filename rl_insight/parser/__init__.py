@@ -36,6 +36,7 @@ def __getattr__(name):
 __all__ = [
     "BaseClusterParser",
     "get_cluster_parser_cls",
+    "register_parser_specific_args",
     "MemoryClusterParser",
     "MstxClusterParser",
     "TorchClusterParser",

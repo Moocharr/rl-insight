@@ -275,3 +275,63 @@ GMM 热力图输入类型为 `DataEnum.GMM_DATA`。**路径约定、参数与示
 
 - 输入为已存在的目录路径；
 - 其下至少存在一个位于 `dump_tensor_data` 路径段中的 `*group_list.pt` 文件。
+
+## 6. Ascend Memory Profiling 数据
+
+Memory Parser 输入类型为 `DataEnum.ASCEND_MEMORY`（CLI：`--input-type ascend_memory`、`--profiler-type memory`）。用户侧快速入门见 [Memory Parser Quickstart](../overview/memory_parser_quickstart.md)，开发者指南见 [Memory Parser Guide](../developer_guides/memory_parser_guide.md)。
+
+### 6.1 目录结构
+
+```text
+<profile-data-path>/
+└── <role>/
+    └── *_ascend_pt/
+        ├── profiler_info_<rank_id>.json
+        ├── profiler_metadata.json
+        └── ASCEND_PROFILER_OUTPUT/
+            ├── operator_memory.csv
+            └── trace_view.json
+```
+
+### 6.2 operator_memory.csv 要点
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `Name` | str | 算子名称 |
+| `Size(KB)` | float | 正数=申请，负数=释放 |
+| `Allocation Time(us)` | float | 申请/释放时间戳（微秒），末尾可能含制表符 |
+| `Duration(us)` | float | 占用时长（可能为空，表示未释放） |
+| `Allocation Total Allocated(MB)` | float | 申请时刻累计已分配 |
+| `Allocation Total Reserved(MB)` | float | 申请时刻累计预留 |
+| `Allocation Total Active(MB)` | float | 申请时刻累计活跃 |
+| `Device Type` | str | 设备类型（如 `NPU:0`） |
+
+### 6.3 trace_view.json 要点（Memory Parser 视角）
+
+Memory Parser 仅消费 `trace_view.json` 中 `cat=="cpu_op"` 且 `args` 中含 `"Call stack"` 的事件，用于调用栈关联。文件可能较大（数百 MB），Parser 使用 `ijson` 流式解析。
+
+关键字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `cat` | str | 事件类别，Memory Parser 仅消费 `"cpu_op"` |
+| `name` | str | 算子名称，用于与 `operator_memory.csv` 的 `Name` 匹配 |
+| `ts` | str | 开始时间戳（微秒），JSON 中为字符串类型 |
+| `dur` | float | 持续时间（微秒） |
+| `args.Call stack` | str | Python 调用栈，以 `";\r\n"` 分隔 |
+
+### 6.4 输出 summary_memory_event 数据
+
+Memory Parser 输出类型为 `DataEnum.SUMMARY_MEMORY_EVENT`，为 `pd.DataFrame`，每行对应一条内存分配/释放记录。完整字段说明见 [Memory Parser Guide](../developer_guides/memory_parser_guide.md) 中 `MemoryEventRow` 定义。
+
+必须包含的字段列：
+
+- `name`、`role`、`rank_id`
+- `call_stack`、`call_stack_top`
+- `size_kb`、`start_time_ms`、`duration_ms`
+- `total_allocated_mb`、`total_reserved_mb`、`total_active_mb`
+- `device_type`
+
+### 6.5 输入数据校验
+
+`DataEnum.ASCEND_MEMORY` 当前未注册校验规则（`DataChecker.rules` 中为空列表），输入校验由 `MemoryClusterParser.parse_analysis_data()` 内部的文件存在性检查承担。如需增加校验规则，参考 [DataRule 扩展说明](../developer_guides/rule_extending_guide.md)。

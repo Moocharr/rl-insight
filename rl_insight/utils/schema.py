@@ -67,13 +67,41 @@ GMMKEYS: tuple[str, ...] = (
 
 
 class MemoryEventRow(TypedDict):
+    """A single memory allocation / deallocation record produced by MemoryClusterParser.
+
+    Attributes:
+        name: Operator name from ``operator_memory.csv`` (e.g. ``aten::empty``).
+            Covers all operator types, not only ``cpu_op``.
+        role: RL role name (e.g. ``actor_update``).
+        rank_id: Rank identifier.
+        call_stack: Full Python call stack from ``trace_view.json``
+            (frames separated by ``";\\r\\n"``).  Empty string when no
+            matching ``cpu_op`` event is found.
+        call_stack_top: First line of the call stack — the user-code entry
+            point.  Empty string when ``call_stack`` is empty.
+        size_kb: Memory size in KB.  Positive = allocation, negative =
+            deallocation.
+        start_time_ms: Timestamp of the allocation / deallocation in
+            milliseconds.  Named ``start_time_ms`` to align with the
+            ``start_time_ms`` key expected by
+            :class:`BaseClusterParser.reducer_func`.
+        duration_ms: How long the memory block stayed allocated (ms).
+            ``0.0`` when the memory has not been released yet.
+        total_allocated_mb: Cumulative allocated memory (MB) at allocation
+            time.
+        total_reserved_mb: Cumulative reserved memory (MB) at allocation
+            time.
+        total_active_mb: Cumulative active memory (MB) at allocation time.
+        device_type: Device type string (e.g. ``NPU:0``).
+    """
+
     name: str
     role: str
     rank_id: int
     call_stack: str
     call_stack_top: str
     size_kb: float
-    allocation_time_ms: float
+    start_time_ms: float
     duration_ms: float
     total_allocated_mb: float
     total_reserved_mb: float
