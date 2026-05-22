@@ -28,7 +28,7 @@ Memory Parser 是 RL-Insight 的内存分析模块，基于 Ascend Profiler 采�
 ```text
 <input-path>/
 └── <role>/
-    └── *_ascend_pt/
+    └── <date>_<time>_ascend_pt/
         ├── profiler_info_<rank_id>.json
         ├── profiler_metadata.json
         └── ASCEND_PROFILER_OUTPUT/

@@ -48,13 +48,14 @@ BaseClusterParser (rl_insight/parser/parser.py)
         ├── allocate_prof_data()          → 扫描目录，构建 DataMap
         ├── parse_analysis_data()         → 主解析流程
         ├── _build_call_stack_index()     → 流式解析 trace_view.json，构建调用栈索引
-        ├── _parse_operator_memory()      → 解析 operator_memory.csv，输出 MemoryEventRow
+        ├── _parse_operator_memory()      → 解析 operator_memory.csv，输出 dict[str, Any]
         ├── _match_call_stack()           → name + ts 匹配调用栈
         ├── _get_data_map()               → 构建 (role, rank_id) → [path] 映射
         ├── _get_rank_path_with_role()    → 生成 DataMap 列表
         ├── _get_profiler_data_path()     → 拼接 ASCEND_PROFILER_OUTPUT 路径
         ├── _get_rank_id()                → 从 profiler_info_*.json 提取 rank_id
-        └── _get_task_role()              → 从 profiler_metadata.json 提取 role
+        ├── _get_task_role()              → 从 profiler_metadata.json 提取 role
+        └── _extract_timestamp_key()      → 提取目录名中的时间戳排序键
 ```
 
 ---
@@ -114,9 +115,10 @@ class MemoryEventRow(TypedDict):
 
 复用 MstxClusterParser 的目录扫描逻辑：
 
-1. 遍历 `input_path`，找到所有 `*_ascend_pt` 目录
+1. 遍历 `input_path`，找到所有 `<date>_<time>_ascend_pt` 目录
 2. 从 `profiler_metadata.json` 提取 `role`，从 `profiler_info_*.json` 提取 `rank_id`
-3. `profiler_data_path` 指向 `ASCEND_PROFILER_OUTPUT` 目录（注意：与 MstxClusterParser 指向 `trace_view.json` 文件不同，Memory Parser 指向目录，因为需要同时访问 `trace_view.json` 和 `operator_memory.csv`）
+3. 按 `_extract_timestamp_key` 提取的时间戳对同 (role, rank_id) 下的目录排序
+4. `profiler_data_path` 指向 `ASCEND_PROFILER_OUTPUT` 目录（注意：与 MstxClusterParser 指向 `trace_view.json` 文件不同，Memory Parser 指向目录，因为需要同时访问 `trace_view.json` 和 `operator_memory.csv`）
 
 **关键差异**：
 
@@ -132,7 +134,7 @@ def _get_profiler_data_path(self, rank_id, data_path):
 
 ### 2.4 parse_analysis_data()
 
-主解析流程，接收单个 Rank 的数据路径，返回 `list[MemoryEventRow]`：
+主解析流程，接收单个 Rank 的数据路径，返回 `list[dict[str, Any]]`：
 
 ```
 输入: profiler_data_path (ASCEND_PROFILER_OUTPUT 目录), rank_id, role
@@ -153,7 +155,7 @@ def _get_profiler_data_path(self, rank_id, data_path):
           c. 提取 call_stack_top: 取调用栈第一行
           d. duration_ms: Duration(us) 有值则转换，无值则为 0
 
-步骤3: 返回 list[MemoryEventRow]
+步骤3: 返回 list[dict[str, Any]]
 ```
 
 ### 2.5 _build_call_stack_index()
@@ -161,7 +163,7 @@ def _get_profiler_data_path(self, rank_id, data_path):
 流式解析 `trace_view.json`，构建调用栈索引：
 
 - **输入**：`trace_view.json` 文件路径
-- **输出**：`dict[str, dict]`，每个值包含 `"entries"`（`list[{ts, dur, call_stack}]`，按 `ts` 升序排序）和 `"ts_list"`（预提取的 `ts` 列表，供二分查找直接使用）
+- **输出**：`dict[str, dict]`，每个值包含 `"entries"`（`list[{ts, dur, call_stack}]`，按 `ts` 升序排序）和 `"ts_list"`（预提取的 `ts` 列表，供二分查找直接使用，避免每次调用重建列表）
 - **过滤条件**：仅保留 `cat=="cpu_op"` 且 `args` 中含 `"Call stack"` 的事件
 - **流式解析**：使用 `ijson.items(f, "item")` 逐条读取，避免将整个 JSON 加载到内存
 - **排序**：组内按 `ts` 升序排序，确保后续二分查找的正确性

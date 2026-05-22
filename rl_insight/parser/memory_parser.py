@@ -20,9 +20,10 @@ from loguru import logger
 import os
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 from .parser import BaseClusterParser, register_cluster_parser
-from rl_insight.utils.schema import Constant, DataMap, MemoryEventRow
+from rl_insight.utils.schema import Constant, DataMap
 from rl_insight.data import DataEnum
 
 
@@ -128,13 +129,13 @@ class MemoryClusterParser(BaseClusterParser):
 
     def parse_analysis_data(
         self, profiler_data_path: str, rank_id: int, role: str
-    ) -> list[MemoryEventRow]:
+    ) -> list[dict[str, Any]]:
         """Parse memory profiling data for a single rank.
 
         Reads ``operator_memory.csv`` for memory allocation records and
         ``trace_view.json`` for call-stack enrichment.  Returns a list of
-        ``MemoryEventRow`` dicts — see class docstring for full column
-        descriptions.
+        dicts with keys defined by ``MemoryEventRow`` — see class docstring
+        for full column descriptions.
 
         Args:
             profiler_data_path: Path to the ``ASCEND_PROFILER_OUTPUT``
@@ -144,7 +145,7 @@ class MemoryClusterParser(BaseClusterParser):
             role: RL role name (e.g. ``actor_update``).
 
         Returns:
-            list[MemoryEventRow]: One entry per CSV row.  Empty list when
+            list[dict[str, Any]]: One entry per CSV row.  Empty list when
                 either required file is missing or contains no data.
         """
         if not profiler_data_path:
@@ -172,9 +173,7 @@ class MemoryClusterParser(BaseClusterParser):
             operator_memory_path, call_stack_index, rank_id, role
         )
 
-        logger.info(
-            f"Rank {rank_id} Role {role}: parsed {len(results)} memory events"
-        )
+        logger.info(f"Rank {rank_id} Role {role}: parsed {len(results)} memory events")
         return results
 
     def _build_call_stack_index(self, trace_view_path: str) -> dict:
@@ -251,7 +250,7 @@ class MemoryClusterParser(BaseClusterParser):
         call_stack_index: dict,
         rank_id: int,
         role: str,
-    ) -> list[MemoryEventRow]:
+    ) -> list[dict[str, Any]]:
         """Parse ``operator_memory.csv`` and enrich each row with call stacks.
 
         Iterates over every row in the CSV (both allocations and deallocations)
@@ -269,10 +268,10 @@ class MemoryClusterParser(BaseClusterParser):
             role: RL role name for data attribution.
 
         Returns:
-            list[MemoryEventRow]: One dict per CSV row.  See class docstring
+            list[dict[str, Any]]: One dict per CSV row.  See class docstring
                 for field semantics.
         """
-        results: list[MemoryEventRow] = []
+        results: list[dict[str, Any]] = []
         us_to_ms = Constant.US_TO_MS
 
         with open(csv_path, "r", encoding="utf-8") as f:
@@ -297,28 +296,28 @@ class MemoryClusterParser(BaseClusterParser):
                 duration_us = row.get("Duration(us)", "").strip()
                 duration_ms = float(duration_us) / us_to_ms if duration_us else 0.0
 
-                # Build MemoryEventRow; all times are converted to milliseconds
+                # Build memory event row; all times are converted to milliseconds
                 results.append(
-                    MemoryEventRow(
-                        name=row["Name"].strip(),
-                        role=role,
-                        rank_id=rank_id,
-                        call_stack=call_stack,
-                        call_stack_top=call_stack_top,
-                        size_kb=size_kb,
-                        start_time_ms=allocation_time_us / us_to_ms,
-                        duration_ms=duration_ms,
-                        total_allocated_mb=float(
+                    {
+                        "name": row["Name"].strip(),
+                        "role": role,
+                        "rank_id": rank_id,
+                        "call_stack": call_stack,
+                        "call_stack_top": call_stack_top,
+                        "size_kb": size_kb,
+                        "start_time_ms": allocation_time_us / us_to_ms,
+                        "duration_ms": duration_ms,
+                        "total_allocated_mb": float(
                             row["Allocation Total Allocated(MB)"].strip() or 0
                         ),
-                        total_reserved_mb=float(
+                        "total_reserved_mb": float(
                             row["Allocation Total Reserved(MB)"].strip() or 0
                         ),
-                        total_active_mb=float(
+                        "total_active_mb": float(
                             row["Allocation Total Active(MB)"].strip() or 0
                         ),
-                        device_type=row["Device Type"].strip(),
-                    )
+                        "device_type": row["Device Type"].strip(),
+                    }
                 )
 
         return results
@@ -405,6 +404,7 @@ class MemoryClusterParser(BaseClusterParser):
                     Constant.RANK_ID: rank_id,
                     Constant.ROLE: task_role,
                     Constant.PROFILER_DATA_PATH: "",
+                    "step": None,
                 }
 
                 if os.path.exists(profiler_data_path):
@@ -447,9 +447,6 @@ class MemoryClusterParser(BaseClusterParser):
         ``<date>_<time>_ascend_pt`` (e.g. ``20250101_120000_ascend_pt``).
         The sort key is the ``<date>_<time>`` portion so that directories
         are ordered chronologically.
-
-        Falls back gracefully when the directory name does not follow the
-        expected convention (e.g. ``<role>_ascend_pt`` without a timestamp).
 
         Args:
             path_value: Full path to the Ascend profiler directory.

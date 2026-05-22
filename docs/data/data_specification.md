@@ -285,7 +285,7 @@ Memory Parser 输入类型为 `DataEnum.ASCEND_MEMORY`（CLI：`--input-type asc
 ```text
 <profile-data-path>/
 └── <role>/
-    └── *_ascend_pt/
+    └── <date>_<time>_ascend_pt/
         ├── profiler_info_<rank_id>.json
         ├── profiler_metadata.json
         └── ASCEND_PROFILER_OUTPUT/
