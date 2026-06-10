@@ -1,14 +1,14 @@
-# Observability stack for `rl-insight server start/stop` (`load_server_config_file`).
-
 server:
   enable: true
-  backend: docker_compose
-  compose_file: docker-compose.yaml
+  backend: local
   project_name: rl-insight-monitor
 
 prometheus:
   enable: true
+  min_version: 2.30.0
+  install_version: 2.54.1
   prometheus_port: 9090
+  retention_time: 30d
   config_file: prometheus.yml
 
 otel:
@@ -16,11 +16,16 @@ otel:
 
 tempo:
   enable: true
+  min_version: 2.0.0
+  install_version: 2.6.1
   query_port: 3200
+  retention_time: 30d
   config_file: tempo.yaml
 
 grafana:
   enable: true
+  min_version: 9.0.0
+  install_version: 11.6.3
   port: 3000
   config_file: grafana.ini
   provisioning_dir: provisioning

@@ -21,7 +21,7 @@ RL-Insight provides performance insight capabilities for RL training frameworks.
 - **MoE Expert Load Heatmap** — GMM-clustered heatmaps to visualize expert load distribution in Mixture-of-Experts models, helping identify load imbalance across experts and layers.
 
 **Online Monitoring (Experimental)**
-- Real-time observability stack based on **Prometheus + Tempo + Grafana**
+- Real-time server stack based on **Prometheus + Tempo + Grafana**
 - Training-side Python APIs: counter, gauge, histogram metrics plus distributed tracing (`trace_state`, `trace_op`)
 
 ## Installation
@@ -103,11 +103,25 @@ python -m rl_insight.main \
 
 ### Online Monitoring (Experimental)
 
-Start the observability stack and instrument training code:
+Install the Linux server services, then start the stack and instrument training code. RL-Insight requires Prometheus, Tempo, and Grafana; `server install` downloads the supported service versions into a user-managed directory.
+
+```bash
+rl-insight server install
+```
+
+See [Server Installation](experimental/docs/server_installation.md) for Linux distro, CPU architecture, and version requirements.
 
 ```bash
 rl-insight server start
 ```
+
+`server start` runs the local binaries directly. It checks for missing software first and prints the install command when something is unavailable. Stop the services with `Ctrl+C` in foreground mode or from another terminal:
+
+```bash
+rl-insight server stop
+```
+
+Collected Prometheus, Tempo, and Grafana data is persisted under `~/.rl-insight/data` by default. Prometheus and Tempo retain collected data for `30d` unless configured otherwise.
 
 ```python
 import rl_insight as insight

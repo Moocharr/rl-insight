@@ -12,40 +12,44 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Experimental online monitoring: Ray hub, Prometheus ``/metrics``, and OTLP trace export."""
+"""Experimental online monitoring APIs.
 
-from .api import (
-    close,
-    init,
-    metric_count,
-    metric_distribution,
-    metric_value,
-    trace_op,
-    trace_state,
-)
-from .config import (
-    MONITOR_HUB_ACTOR_NAME,
-    MONITOR_RAY_NAMESPACE,
-    load_monitor_config,
-    load_server_config_file,
-    resolve_monitor_stack_paths,
-)
-from .utils import PROMETHEUS_SCRAPE_JOB_NAME, update_prometheus_config
+Public symbols are loaded lazily so ``rl-insight server ...`` can start without
+importing trainer-side optional dependencies such as Ray or OpenTelemetry.
+"""
+
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
 
 
-__all__ = [
-    "close",
-    "init",
-    "load_monitor_config",
-    "load_server_config_file",
-    "MONITOR_HUB_ACTOR_NAME",
-    "MONITOR_RAY_NAMESPACE",
-    "metric_count",
-    "metric_distribution",
-    "metric_value",
-    "PROMETHEUS_SCRAPE_JOB_NAME",
-    "resolve_monitor_stack_paths",
-    "trace_op",
-    "trace_state",
-    "update_prometheus_config",
-]
+_EXPORTS = {
+    "close": ".api",
+    "init": ".api",
+    "metric_count": ".api",
+    "metric_distribution": ".api",
+    "metric_value": ".api",
+    "trace_op": ".api",
+    "trace_state": ".api",
+    "load_monitor_config": ".config",
+    "load_server_config_file": ".config",
+    "MONITOR_HUB_ACTOR_NAME": ".config",
+    "MONITOR_RAY_NAMESPACE": ".config",
+    "resolve_monitor_stack_paths": ".config",
+    "PROMETHEUS_SCRAPE_JOB_NAME": ".utils",
+    "update_prometheus_config": ".utils",
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    """Load public exports on first access."""
+    module_name = _EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(module_name, __name__)
+    value = getattr(module, name)
+    globals()[name] = value
+    return value

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Trainer vs observability-stack paths and loaders for RL-Insight monitoring."""
+"""Trainer and server-stack paths/loaders for RL-Insight monitoring."""
 
 from __future__ import annotations
 
@@ -102,13 +102,13 @@ def load_monitor_config(
 
 
 def load_server_config_file(config_path: str | Path | None = None) -> DictConfig:
-    """Load the observability stack YAML used by ``rl-insight server start/stop`` and absolutize relative paths.
+    """Load server YAML used by ``rl-insight server start/stop`` and resolve paths.
 
     Args:
         config_path: YAML file path; default is the bundled ``config/services/config.yaml``.
 
     Returns:
-        Loaded config with ``config_file`` / ``compose_file`` paths resolved against the YAML directory.
+        Loaded config with service file paths resolved against the YAML directory.
     """
     yaml_path = (
         MONITOR_CONFIG_FILE.resolve()
@@ -159,8 +159,27 @@ def resolve_monitor_stack_paths(conf: DictConfig, config_root: Path) -> None:
             grafana[key] = str(path.resolve())
 
     server = conf.get("server")
-    if server is not None and server.get("compose_file"):
-        path = Path(str(server.compose_file)).expanduser()
+    if server is not None:
+        for key in ("install_dir", "runtime_dir", "data_dir", "state_file"):
+            path_value = server.get(key)
+            if not path_value:
+                continue
+            path = Path(str(path_value)).expanduser()
+            if not path.is_absolute():
+                path = root / path
+            server[key] = str(path.resolve())
+
+    for section in ("prometheus", "tempo", "grafana"):
+        section_conf = conf.get(section)
+        if section_conf is None or not section_conf.get("binary_path"):
+            continue
+        path = Path(str(section_conf.binary_path)).expanduser()
         if not path.is_absolute():
             path = root / path
-        server.compose_file = str(path.resolve())
+        section_conf.binary_path = str(path.resolve())
+
+    if grafana is not None and grafana.get("homepath"):
+        path = Path(str(grafana.homepath)).expanduser()
+        if not path.is_absolute():
+            path = root / path
+        grafana.homepath = str(path.resolve())

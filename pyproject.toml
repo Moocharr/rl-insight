@@ -45,7 +45,13 @@ experimental = [
   "config/*.ini",
   "config/services/*.yaml",
   "config/services/*.yml",
-  "config/services/*.ini"
+  "config/services/*.ini",
+  "config/services/docker-compose-dev/*.yaml",
+  "config/services/docker-compose-dev/*.md",
+  "config/services/provisioning/datasources/*.yml",
+  "config/services/provisioning/dashboards/*.yml",
+  "config/services/dashboards/*.json",
+  "docs/*.md"
 ]
 
 [tool.pytest.ini_options]
