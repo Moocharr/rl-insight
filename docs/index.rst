@@ -18,7 +18,7 @@ under Recipe.
 
 .. toctree::
    :maxdepth: 2
-   :caption: Recipe Overview
+   :caption: Recipe Offline Analysis
 
    Architecture <recipe/overview/architecture>
    RL Timeline quickstart <recipe/overview/RL_Timeline_quickstart>
@@ -27,19 +27,19 @@ under Recipe.
 
 .. toctree::
    :maxdepth: 2
-   :caption: Data Specification
+   :caption: Recipe Data Specification
 
    Data Specification and Format Guide <recipe/data/data_specification>
 
 .. toctree::
    :maxdepth: 2
-   :caption: Utils
+   :caption: Recipe Utils
 
    MSTX Preprocessing <recipe/utils/mstx_preprocessing>
 
 .. toctree::
    :maxdepth: 2
-   :caption: Developer Guides
+   :caption: Recipe Developer Guides
 
    Extending Guide <recipe/developer_guides/extending_guide>
    BaseClusterParser Interface <recipe/developer_guides/baseclusterparser_interface>

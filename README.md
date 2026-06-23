@@ -17,9 +17,9 @@
 
 </div>
 
-## Why RL-Insight Monitor
+## Why RL-Insight
 
-RL-Insight Monitor focuses on the online observability path that RL training needs most:
+RL-Insight focuses on the online observability path that RL training needs most:
 
 - **One-command server startup**: install and start Prometheus, Tempo, and Grafana with `rl-insight server install` and `rl-insight server start`.
 - **Trainer and rollout metric aggregation**: collect key actor, rollout, and transfer queue metrics in one monitoring view while keeping training-side instrumentation lightweight.
@@ -139,7 +139,7 @@ Useful environment variables:
 | `RL_INSIGHT_PROMETHEUS_PORT` | Prometheus HTTP port, default `9090`. |
 | `RL_INSIGHT_PROMETHEUS_CONFIG_FILE` | Prometheus config path when the monitor hub updates scrape targets. |
 
-## Offline Analysis
+## Recipe Offline Analysis
 
 Offline timeline, heatmap, and parser utilities are kept under `recipe/`; see [Recipe README](./recipe/README.md) for that workflow.
 
@@ -158,9 +158,3 @@ Offline timeline, heatmap, and parser utilities are kept under `recipe/`; see [R
 ## Contribution Guide
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md).
-
-
-
-
-
-
