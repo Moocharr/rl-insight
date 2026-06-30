@@ -12,14 +12,14 @@ profiling 数据 → MemoryParser → DataChecker → MemoryVisualizer → HTML 
 
 ### 1.1 主要功能
 
-**Memory Parser**（`timeline.parser.type=memory`）：
+**Memory Parser**（`memory.parser.type=memory`）：
 
 - **内存分配解析**：解析 Ascend Profiler 输出的 `operator_memory.csv`，提取算子级内存分配/释放记录
 - **调用栈关联**：通过 `trace_view.json` 中的 `cpu_op` 事件，为每条内存记录匹配 Python 调用栈，便于定位内存申请源头
 - **并行处理**：利用多进程并行解析多个 Rank 的内存数据，提升处理效率
 - **结构化输出**：输出标准化的 DataFrame，包含 `name`、`size_kb`、`start_time_ms`、`duration_ms`、`total_allocated_mb`、`call_stack` 等字段
 
-**Memory Visualizer**（`timeline.visualizer.type=memory_html`）：
+**Memory Visualizer**（`memory.visualizer.type=memory_html`）：
 
 - **双图表交互展示**：Chart1 累计内存趋势折线图 + Chart2 算子甘特图，x 轴实时联动缩放
 - **调用栈回溯**：点击任意 bar 查看该内存事件的完整调用栈
@@ -98,8 +98,8 @@ python -m recipe.utils.mstx_preprocessing <profiling_data_path>
 # 完整 Pipeline：Parser → DataChecker → Visualizer
 python -m recipe.main \
     input.path=<profiling_data_path> \
-    timeline.parser.type=memory \
-    timeline.visualizer.type=memory_html \
+    memory.parser.type=memory \
+    memory.visualizer.type=memory_html \
     output.path=<output_path>
 ```
 
@@ -148,13 +148,10 @@ Memory 模块相关参数：
 | 参数 | 必填 | 说明 |
 |------|------|------|
 | `input.path` | ✅ | Profiling 数据根目录路径 |
-| `timeline.parser.type` | ✅ | 指定 `memory` |
-| `timeline.visualizer.type` | ✅ | 指定 `memory_html` |
+| `memory.parser.type` | ✅ | 指定 `memory` |
+| `memory.visualizer.type` | ✅ | 指定 `memory_html` |
 | `output.path` | 否 | 输出目录路径（默认 `output`） |
 | `input.rank_list` | 否 | Rank 过滤，默认 `all` |
-| `preset` | 否 | 预置配置：`timeline` 或 `heatmap` |
-
-完整参数见 `python -m recipe.main --help` 或 [RL Timeline quickstart](./RL_Timeline_quickstart.md)。
 
 ## 4. 输出说明
 

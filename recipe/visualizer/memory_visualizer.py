@@ -43,8 +43,6 @@ class MemoryVisualizer(BaseVisualizer):
 
     # ── Rendering constants ────────────────────────────────────────────
     _MAX_TIMELINE_POINTS = 2000  # max points in Chart1 memory line
-    _MAX_SEGMENTS = 20  # upper bound on segment file count
-    _TARGET_BARS_PER_SEGMENT = 5000  # target bar count before splitting
     _HOVER_TOP_N = 10  # Chart1 hover shows top-N by size
     _KB_TO_MB = 1.0 / 1024.0  # KB → MB conversion factor
 
@@ -216,23 +214,7 @@ class MemoryVisualizer(BaseVisualizer):
             f"{len(op_names)} unique operators"
         )
 
-        # ── Split into time segments ──────────────────────────────────
-        num_segments = max(
-            1,
-            min(
-                self._MAX_SEGMENTS,
-                int(np.ceil(total_bar_count / self._TARGET_BARS_PER_SEGMENT)),
-            ),
-        )
-        logger.info(
-            f"Splitting into {num_segments} time segment(s) (max {self._MAX_SEGMENTS})"
-        )
-
-        t_rel_min = gantt_starts[0]
-        t_rel_max = max(s + d for s, d in zip(gantt_starts, gantt_durations))
-        seg_width = (t_rel_max - t_rel_min) / num_segments
-
-        # Build Chart1 data once (full timeline, shared across segments)
+        # ── Build Chart1 data (full timeline) ─────────────────────────
         tl_xy, tl_active = self._build_chart1_data(
             memory_timeline,
             gantt_name_ids,
@@ -242,7 +224,7 @@ class MemoryVisualizer(BaseVisualizer):
             op_names,
         )
 
-        # Color map (shared across segments)
+        # Color map for operators
         color_palette = [
             "#4e79a7",
             "#f28e8b",
@@ -274,108 +256,53 @@ class MemoryVisualizer(BaseVisualizer):
             output_dir = os.path.dirname(output_dir) or "."
         os.makedirs(output_dir, exist_ok=True)
 
-        segments = []
-        # Pre-compute all segment boundaries for the segment-map feature
-        all_segments_info = []
-        for seg_idx in range(num_segments):
-            seg_start = t_rel_min + seg_idx * seg_width
-            seg_end = t_rel_min + (seg_idx + 1) * seg_width
-            if seg_idx == num_segments - 1:
-                seg_end = t_rel_max + 1  # include all remaining
+        # Build a single HTML + detail_data.js containing all events.
+        # (Previously split into up to 20 time segments for performance;
+        #  rendering is now fast enough to keep everything in one file.)
+        html, detail_js = self._build_memory_html(
+            t_offset=t_min_abs,
+            tl_xy=tl_xy,
+            tl_active=tl_active,
+            gantt_name_ids=gantt_name_ids,
+            gantt_starts=gantt_starts,
+            gantt_durations=gantt_durations,
+            gantt_sizes=gantt_sizes,
+            total_alloc_arr=total_alloc_arr,
+            call_stack_pool=call_stack_pool,
+            call_stack_idx_arr=call_stack_idx_arr,
+            op_names=op_names,
+            op_color_map=op_color_map,
+            total_bar_count=total_bar_count,
+            rank_prefix=rank_prefix,
+        )
 
-            seg_label = f"{seg_start + t_min_abs:.0f} – {seg_end + t_min_abs:.0f} ms"
-            all_segments_info.append(
-                (seg_idx, round(seg_start, 2), round(seg_end, 2), seg_label)
-            )
+        if rank_prefix:
+            data_path = os.path.join(output_dir, f"detail_data_{rank_prefix}.js")
+            html_path = os.path.join(output_dir, f"memory_timeline_{rank_prefix}.html")
+        else:
+            data_path = os.path.join(output_dir, "detail_data.js")
+            html_path = os.path.join(output_dir, "memory_timeline.html")
+        with open(data_path, "w", encoding="utf-8") as f:
+            f.write(detail_js)
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html)
 
-        # Segment map for JS: [idx, rel_start, rel_end] — shared by all segments
-        seg_data = [[si, rs, re] for si, rs, re, _ in all_segments_info]
-
-        for seg_idx in range(num_segments):
-            seg_start = all_segments_info[seg_idx][1]
-            seg_end = all_segments_info[seg_idx][2]
-            seg_label = all_segments_info[seg_idx][3]
-
-            # Filter bar indices that overlap with this time segment
-            bar_indices = [
-                i
-                for i in range(len(gantt_starts))
-                if gantt_starts[i] + gantt_durations[i] > seg_start
-                and gantt_starts[i] < seg_end
-            ]
-            if not bar_indices:
-                logger.info(f"  Segment {seg_idx + 1}/{num_segments} empty — skipped")
-                continue  # skip empty segments
-
-            seg_gantt_name_ids = [gantt_name_ids[i] for i in bar_indices]
-            seg_gantt_starts = [gantt_starts[i] for i in bar_indices]
-            seg_gantt_durations = [gantt_durations[i] for i in bar_indices]
-            seg_gantt_sizes = [gantt_sizes[i] for i in bar_indices]
-            seg_total_alloc = [total_alloc_arr[i] for i in bar_indices]
-            seg_call_stack_idx_arr = [call_stack_idx_arr[i] for i in bar_indices]
-
-            segments.append((seg_idx, seg_label, len(bar_indices)))
-
-            # Build per-segment HTML + detail_data.js
-            html, detail_js = self._build_memory_html(
-                t_offset=t_min_abs,
-                tl_xy=tl_xy,
-                tl_active=tl_active,
-                gantt_name_ids=seg_gantt_name_ids,
-                gantt_starts=seg_gantt_starts,
-                gantt_durations=seg_gantt_durations,
-                gantt_sizes=seg_gantt_sizes,
-                total_alloc_arr=seg_total_alloc,
-                call_stack_pool=call_stack_pool,
-                call_stack_idx_arr=seg_call_stack_idx_arr,
-                op_names=op_names,
-                op_color_map=op_color_map,
-                total_bar_count=len(seg_gantt_name_ids),
-                global_bar_count=total_bar_count,
-                seg_idx=seg_idx,
-                seg_label=seg_label,
-                num_segments=num_segments,
-                seg_data=seg_data,
-                t_rel_max=t_rel_max,
-                rank_prefix=rank_prefix,
-            )
-
-            if rank_prefix:
-                data_path = os.path.join(
-                    output_dir, f"detail_data_{rank_prefix}_{seg_idx:02d}.js"
-                )
-                html_path = os.path.join(
-                    output_dir, f"memory_timeline_{rank_prefix}_{seg_idx:02d}.html"
-                )
-            else:
-                data_path = os.path.join(output_dir, f"detail_data_{seg_idx:02d}.js")
-                html_path = os.path.join(
-                    output_dir, f"memory_timeline_{seg_idx:02d}.html"
-                )
-            with open(data_path, "w", encoding="utf-8") as f:
-                f.write(detail_js)
-            with open(html_path, "w", encoding="utf-8") as f:
-                f.write(html)
-
-            html_name = os.path.basename(html_path)
-            logger.info(
-                f"  [{seg_idx + 1}/{num_segments}] "
-                f"{html_name} "
-                f"({len(html) / 1024:.0f} KB HTML + "
-                f"{len(detail_js) / 1024:.0f} KB data) "
-                f"— {len(bar_indices)} events, "
-                f"{seg_label}"
-            )
+        logger.info(
+            f"  {os.path.basename(html_path)} "
+            f"({len(html) / 1024:.0f} KB HTML + "
+            f"{len(detail_js) / 1024:.0f} KB data) "
+            f"— {total_bar_count} events"
+        )
 
         # Summary
         logger.info(
             f"Memory timeline generation complete: "
-            f"{len(segments)} segment(s), {total_bar_count} events, "
+            f"{total_bar_count} events, "
             f"{len(op_names)} operators → {output_dir}"
         )
         if rank_prefix:
-            return os.path.join(output_dir, f"memory_timeline_{rank_prefix}_00.html")
-        return os.path.join(output_dir, "memory_timeline_00.html")
+            return os.path.join(output_dir, f"memory_timeline_{rank_prefix}.html")
+        return os.path.join(output_dir, "memory_timeline.html")
 
     @staticmethod
     def _build_chart1_data(
@@ -432,6 +359,10 @@ class MemoryVisualizer(BaseVisualizer):
                             [[op_name, round(sz, 1)] for _, _, op_name, sz in top_n],
                         ]
                     )
+                else:
+                    # 始终 append，保持 tl_active 与 tl_xy 等长对齐，
+                    # 避免前端按索引取值时错位。
+                    tl_active.append([0, []])
         return tl_xy, tl_active
 
     def _build_memory_html(
@@ -449,18 +380,12 @@ class MemoryVisualizer(BaseVisualizer):
         op_names,
         op_color_map,
         total_bar_count,
-        global_bar_count,
-        seg_idx,
-        seg_label,
-        num_segments,
-        seg_data,
-        t_rel_max,
         rank_prefix=None,
     ):
-        """Build HTML + detail_data.js for one time segment.
+        """Build a single HTML + detail_data.js containing all events.
 
-        Chart1 (tl_xy, tl_active) is global — same across all segments.
-        Chart2 arrays are per-segment filtered.
+        Chart1 (tl_xy, tl_active) is the full memory timeline.
+        Chart2 arrays contain every allocation event.
         """
         compact_opts = {"separators": (",", ":"), "ensure_ascii": False}
         to_json = json.dumps
@@ -480,62 +405,17 @@ class MemoryVisualizer(BaseVisualizer):
             "var TL_ACTIVE = " + to_json(tl_active, **compact_opts) + ";",
             "var CS_POOL = " + to_json(call_stack_pool, **compact_opts) + ";",
             "var CS_IDX = " + to_json(call_stack_idx_arr, **compact_opts) + ";",
-            # Segment info for hint feature: [idx, rel_start, rel_end]
-            "var SEGMENTS = " + to_json(seg_data, **compact_opts) + ";",
-            "var T_REL_MAX = " + to_json(t_rel_max) + ";",
-            "var SEG_INDEX = " + str(seg_idx) + ";",
-            "var RANK_PREFIX = " + to_json(rank_prefix or "", **compact_opts) + ";",
         ]
         detail_js = "\n".join(detail_lines)
 
-        # Read HTML template and inject segment navigation
+        # Read HTML template and inject the data file reference
         template_path = os.path.join(os.path.dirname(__file__), "memory_template.html")
         with open(template_path, "r", encoding="utf-8") as f:
             html = f.read()
 
-        # Inject segment navigation and data file reference
         data_filename = (
-            f"detail_data_{rank_prefix}_{seg_idx:02d}.js"
-            if rank_prefix
-            else f"detail_data_{seg_idx:02d}.js"
+            f"detail_data_{rank_prefix}.js" if rank_prefix else "detail_data.js"
         )
-        nav_html = self._build_segment_nav(
-            seg_idx, seg_label, num_segments, global_bar_count, rank_prefix
-        )
-        html = html.replace("__SEGMENT_NAV__", nav_html)
-        html = html.replace("__SEGMENT_LABEL__", seg_label)
         html = html.replace("__DATA_FILE__", data_filename)
 
         return html, detail_js
-
-    @staticmethod
-    def _build_segment_nav(
-        seg_idx, seg_label, num_segments, global_bar_count, rank_prefix=None
-    ):
-        """Build segment navigation HTML snippet."""
-        prefix = f"memory_timeline_{rank_prefix}" if rank_prefix else "memory_timeline"
-        parts = [
-            '<div class="control-group" style="border-left:2px solid #eee;'
-            'padding-left:16px;gap:4px">'
-        ]
-        if seg_idx > 0:
-            parts.append(
-                f'<a href="{prefix}_{seg_idx - 1:02d}.html" '
-                f'style="text-decoration:none;color:#4e79a7;font-size:13px;'
-                f'padding:4px 8px;border:1px solid #4e79a7;border-radius:4px"'
-                f">← Prev</a>"
-            )
-        parts.append(
-            f'<span style="font-size:12px;color:#888;margin:0 6px">'
-            f"Seg {seg_idx + 1}/{num_segments}: {seg_label}</span>"
-        )
-        if seg_idx < num_segments - 1:
-            parts.append(
-                f'<a href="{prefix}_{seg_idx + 1:02d}.html" '
-                f'style="text-decoration:none;color:#4e79a7;font-size:13px;'
-                f'padding:4px 8px;border:1px solid #4e79a7;border-radius:4px"'
-                f">Next →</a>"
-            )
-        parts.append(f'<span class="unit">({global_bar_count} total events)</span>')
-        parts.append("</div>")
-        return "".join(parts)

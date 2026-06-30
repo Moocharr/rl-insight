@@ -30,14 +30,15 @@ def test_memory_e2e_with_sample_data(monkeypatch, tmp_path):
         "main.py",
         f"input.path={input_dir}",
         f"output.path={output_dir}",
-        "timeline.parser.type=memory",
-        "timeline.visualizer.type=memory_html",
+        "memory.parser.type=memory",
+        "memory.visualizer.type=memory_html",
     ]
     monkeypatch.setattr(sys, "argv", test_args)
 
     main()
 
-    html_file = output_dir / "memory_timeline_00.html"
-    data_file = output_dir / "detail_data_00.js"
+    # data uses role="memory_data", rank_id=0 — single HTML (no segment split).
+    html_file = output_dir / "memory_timeline_memory_data_rank0.html"
+    data_file = output_dir / "detail_data_memory_data_rank0.js"
     assert html_file.exists(), f"Missing: {html_file}"
     assert data_file.exists(), f"Missing: {data_file}"
