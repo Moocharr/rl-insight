@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+MEMORY_DATA_PATH="${MEMORY_DATA_PATH:-}"
+OUTPUT_PATH="${OUTPUT_PATH:-./output}"
+RANK_LIST="${RANK_LIST:-all}"
+
+echo "=========================================="
+echo "Memory Allocation Timeline Visualization"
+echo "=========================================="
+echo "Input Path:    ${MEMORY_DATA_PATH}"
+echo "Output Path:   ${OUTPUT_PATH}"
+echo "Rank List:     ${RANK_LIST}"
+echo "=========================================="
+
+cmd="python -m recipe.main \
+    input.path=\"${MEMORY_DATA_PATH}\" \
+    output.path=\"${OUTPUT_PATH}\" \
+    input.rank_list=\"${RANK_LIST}\" \
+    memory.parser.type=memory \
+    memory.visualizer.type=memory_html"
+
+echo ">>> Generating memory allocation timeline..."
+eval ${cmd}
+
+if [ -f "${OUTPUT_PATH}/memory_timeline_00.html" ]; then
+    echo "=========================================="
+    echo ">>> Memory timeline generated successfully!"
+    echo ">>> Output saved to: ${OUTPUT_PATH}/memory_timeline_00.html"
+    echo "=========================================="
+else
+    echo "=========================================="
+    echo ">>> Failed to generate memory timeline"
+    echo "=========================================="
+    exit 1
+fi

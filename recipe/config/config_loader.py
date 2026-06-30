@@ -118,7 +118,7 @@ class _HelpRenderer:
 
 class ConfigLoader:
     PRESETS_DIR = Path(__file__).parent
-    SUPPORTED_PRESETS = {"timeline", "heatmap"}
+    SUPPORTED_PRESETS = {"timeline", "heatmap", "memory"}
 
     @classmethod
     def load(
@@ -221,4 +221,6 @@ class ConfigLoader:
         for arg in args:
             if arg.startswith("heatmap."):
                 return "heatmap"
+            if arg.startswith("memory."):
+                return "memory"
         return None
