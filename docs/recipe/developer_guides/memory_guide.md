@@ -71,10 +71,9 @@ BaseVisualizer (recipe/visualizer/visualizer.py)
   └── MemoryVisualizer (recipe/visualizer/memory_visualizer.py)
         ├── input_type = DataEnum.MEMORY_SUMMARY
         ├── run(data)                     → 委派 generate_memory_timeline
-        ├── generate_memory_timeline()    → 主流程：过滤→向量化→分段→输出
+        ├── generate_memory_timeline()    → 主流程：过滤→向量化→输出
         ├── _build_chart1_data()          → 双指针滑动窗口，Chart1 hover 数据
-        ├── _build_memory_html()          → JSON 序列化 + 模板占位符替换
-        └── _build_segment_nav()          → 段导航 Prev/Next HTML
+        └── _build_memory_html()          → JSON 序列化 + 模板占位符替换
 ```
 
 ---
@@ -238,13 +237,11 @@ class MemoryVisualizer(BaseVisualizer):
 | 常量 | 值 | 说明 |
 |------|-----|------|
 | `_MAX_TIMELINE_POINTS` | 2000 | Chart1 折线最大点数，超出均匀下采样 |
-| `_MAX_SEGMENTS` | 20 | 分段文件数上限 |
-| `_TARGET_BARS_PER_SEGMENT` | 5000 | 触发分段的 bar 数阈值 |
 | `_HOVER_TOP_N` | 10 | Chart1 hover 显示前 N 大活跃算子 |
 
 ### 2.9 generate_memory_timeline()
 
-主流程，串联 6 个处理阶段：
+主流程，串联 5 个处理阶段：
 
 ```
 输入: pd.DataFrame（MEMORYKEYS 5 列）
@@ -255,13 +252,10 @@ class MemoryVisualizer(BaseVisualizer):
   ├── 阶段3: Chart2 并行数组构建
   │     └── 7 列 .tolist() 预提取，CS_POOL + CS_IDX 池化去重
   ├── 阶段4: _build_chart1_data() → tl_xy, tl_active
-  ├── 阶段5: 分段
-  │     └── num = min(20, ceil(bars/5000))，等分时间窗口
-  │         重叠条件: start+dur > seg_start AND start < seg_end
-  └── 阶段6: 每段循环 → _build_memory_html() → 写入文件
+  └── 阶段5: _build_memory_html() → 写入单文件
   │
   ▼
-输出: memory_timeline_00.html 路径
+输出: memory_timeline_{role}_rank{id}.html 路径
 ```
 
 **输入校验**（直接返回 None）：
@@ -290,11 +284,9 @@ for point in memory_timeline:
 
 生成一对文件字符串：
 
-- **detail_data.js**：14 个 JS 变量声明，使用紧凑 JSON（`separators=(",", ":")`）
-- **HTML**：读取 `memory_template.html`，替换三个占位符：
-  - `__SEGMENT_NAV__` → 段导航 HTML
-  - `__SEGMENT_LABEL__` → 当前段时间范围
-  - `__DATA_FILE__` → `detail_data_NN.js` 文件名
+- **detail_data.js**：13 个 JS 变量声明，使用紧凑 JSON（`separators=(",", ":")`）
+- **HTML**：读取 `memory_template.html`，替换占位符：
+  - `__DATA_FILE__` → `detail_data_{role}_rank{id}.js` 文件名
 
 ---
 
