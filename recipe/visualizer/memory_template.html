@@ -12,7 +12,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #
 h1 { text-align: center; margin-bottom: 10px; font-size: 20px; }
 .chart-box { background: #fff; border: 1px solid #ddd; border-radius: 6px; margin-bottom: 12px; padding: 8px 12px 4px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
 .chart-box h3 { font-size: 14px; margin-bottom: 4px; color: #555; }
-#chart1, #chart2 { width: 100%; }
+#chart { width: 100%; }
 .controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 14px 18px; margin-bottom: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
 .control-group { display: flex; align-items: center; gap: 6px; }
 .control-group label { font-weight: 600; font-size: 13px; white-space: nowrap; color: #555; }
@@ -40,8 +40,7 @@ __SEGMENT_NAV__
 <div id="seg-hint" style="font-size:12px;color:#4e79a7;font-weight:600;margin-left:auto;display:none"></div>
 <div class="legend-note" id="range-info"></div>
 </div>
-<div class="chart-box"><h3>Memory Usage Over Time</h3><div id="chart1"></div></div>
-<div class="chart-box"><h3>Operator Memory Gantt</h3><div id="chart2"></div></div>
+<div class="chart-box"><h3>Memory Usage (top) &amp; Allocation Gantt (bottom) — shared time axis | one row per allocation, sorted by start time</h3><div id="chart"></div></div>
 <div class="detail-panel" id="detail-panel"><h3>Operator Detail</h3><div class="detail-grid" id="detail-content"></div></div>
 </div>
 <script src="__DATA_FILE__"></script>
@@ -50,18 +49,48 @@ var T_MIN = 0;
 var T_MAX = GANTT_STARTS[GANTT_STARTS.length-1] + GANTT_DURS[GANTT_DURS.length-1];
 var currentRange = [T_MIN, T_MAX];
 
+// ── 性能配置 ─────────────────────────────────────────────
+// Chart2 单次渲染行数上限：超过则只保留最早的 N 条（按 start 升序），缩放后可见全部。
+var MAX_VISIBLE_BARS = 2500;
+
+// ── 预计算 end 数组（避免重复加法）────────────────────────
+var _ganttEnds = new Array(GANTT_STARTS.length);
+for (var k=0; k<GANTT_STARTS.length; k++) _ganttEnds[k] = GANTT_STARTS[k] + GANTT_DURS[k];
+
+// ── 预构建 per-operator 索引（一次性，全局复用）──────────
+// GANTT_STARTS 已按 start 升序，故每个 operator 的 bar 索引天然升序，
+// 可直接用于二分查找时间窗口。
+var opToBars = {};   // name -> [idx, ...] (按 start 升序)
+(function buildOpIndex() {
+  for (var i = 0; i < GANTT_STARTS.length; i++) {
+    var nm = OP_NAMES[GANTT_IDS[i]];
+    if (!opToBars[nm]) opToBars[nm] = [];
+    opToBars[nm].push(i);
+  }
+})();
+
+// ── 二分查找工具（在已升序数组上）────────────────────────
+function lowerBound(arr, val) {
+  var lo = 0, hi = arr.length;
+  while (lo < hi) { var mid = (lo + hi) >> 1; if (arr[mid] < val) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+function upperBound(arr, val) {
+  var lo = 0, hi = arr.length;
+  while (lo < hi) { var mid = (lo + hi) >> 1; if (arr[mid] <= val) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+
 // Pre-compute active ops at each TL_XY time point from segment bars.
 // Two-pointer sweep: TL_XY times sorted, GANTT_STARTS sorted, GANTT_ENDS sorted.
 // Result: segActive[i] = [count, [[name, size_kb], ...]]  (top-10 by size)
-var _ganttEnds = [];
-for (var k=0; k<GANTT_STARTS.length; k++) _ganttEnds.push(GANTT_STARTS[k]+GANTT_DURS[k]);
 var segActive = [];
 (function() {
   var barIdx = 0, n = GANTT_STARTS.length;
   var active = [];  // heap-like: [origIdx, ...]
   for (var i=0; i<TL_XY.length; i++) {
     var t = TL_XY[i][0];
-    // Remove bars that ended before t
+    // Remove bars that ended before t (swap-pop, O(active))
     var j = 0;
     while (j < active.length) {
       if (_ganttEnds[active[j]] <= t) {
@@ -76,13 +105,20 @@ var segActive = [];
       active.push(barIdx);
       barIdx++;
     }
-    // Top-10 by size
-    var topList = active.slice().sort(function(a,b){
-      return GANTT_SIZES[b] - GANTT_SIZES[a];
-    }).slice(0, 10);
-    var summaries = topList.map(function(idx){
-      return [OP_NAMES[GANTT_IDS[idx]], GANTT_SIZES[idx]];
-    });
+    // Top-10 by size — 只有活跃数 >10 时才排序，避免小集合的 sort 开销
+    var topList;
+    if (active.length <= 10) {
+      topList = active.slice();
+    } else {
+      topList = active.slice().sort(function(a,b){
+        return GANTT_SIZES[b] - GANTT_SIZES[a];
+      }).slice(0, 10);
+    }
+    var summaries = new Array(topList.length);
+    for (var s = 0; s < topList.length; s++) {
+      var idx = topList[s];
+      summaries[s] = [OP_NAMES[GANTT_IDS[idx]], GANTT_SIZES[idx]];
+    }
     segActive.push([active.length, summaries]);
   }
 })();
@@ -108,7 +144,59 @@ function makeTickInfo(t0, t1) {
 }
 var _chart1Ticks = makeTickInfo(T_MIN, T_MAX);
 
-function buildChart1(range) {
+function buildCharts(range) {
+  Plotly.purge('chart');
+
+  // ── 甘特数据准备（每次分配一行，按 start 升序）──────────────
+  // 二分缩小右边界，线性收集时间窗口内可见 bar。
+  var rightExcl = upperBound(GANTT_STARTS, range[1]);
+  var visible = [];
+  for (var i = 0; i < rightExcl; i++) {
+    if (_ganttEnds[i] > range[0]) visible.push(i);
+  }
+  visible.sort(function(a, b) { return GANTT_STARTS[a] - GANTT_STARTS[b]; });
+
+  var totalInRange = visible.length;
+  var capped = false;
+  if (visible.length > MAX_VISIBLE_BARS) {
+    capped = true;
+    visible = visible.slice(0, MAX_VISIBLE_BARS);
+  }
+  var rowCount = visible.length;
+
+  // 按 operator 分组（仅用于着色，每根 bar 仍用各自的全局行号）
+  var groups = {}, opOrder = [];
+  for (var k = 0; k < visible.length; k++) {
+    var idx = visible[k];
+    var nm = OP_NAMES[GANTT_IDS[idx]];
+    if (!groups[nm]) { groups[nm] = []; opOrder.push(nm); }
+    groups[nm].push({ idx: idx, y: k });
+  }
+
+  var ganttTraces = [];
+  for (var r = 0; r < opOrder.length; r++) {
+    var nm = opOrder[r], cl = COLOR_MAP[nm] || '#999';
+    var entries = groups[nm];
+    var n = entries.length;
+    var xs = new Array(n), ys = new Array(n), bases = new Array(n), cds = new Array(n), hts = new Array(n);
+    for (var k = 0; k < n; k++) {
+      var e = entries[k], idx = e.idx, yp = e.y, sz = GANTT_SIZES[idx];
+      xs[k] = GANTT_DURS[idx];
+      ys[k] = yp;
+      bases[k] = GANTT_STARTS[idx];
+      cds[k] = idx;
+      hts[k] = '<b>' + nm + '</b><br>Size: ' + (sz/1024).toFixed(3) + ' MB (' + sz.toFixed(1) + ' KB)<br>Start: '
+        + (GANTT_STARTS[idx]+T_OFFSET).toFixed(3) + ' ms<br>Duration: ' + GANTT_DURS[idx].toFixed(3) + ' ms';
+    }
+    ganttTraces.push({ x: xs, y: ys, base: bases,
+      type: 'bar', orientation: 'h', name: nm, customdata: cds,
+      xaxis: 'x2', yaxis: 'y2',
+      marker: { color: cl, line: { color: 'rgba(255,255,255,0)', width: 2 } },
+      hovertext: hts, hoverinfo: 'text',
+      hoverlabel: { bgcolor: '#fff', bordercolor: cl, font: { size: 11 } }, showlegend: false });
+  }
+
+  // ── 折线图数据（内存使用趋势 + 活跃算子明细）──────────────
   var times=[], values=[], hoverTimes=[], cd=[];
   for (var i=0; i<TL_XY.length; i++) {
     var p=TL_XY[i];
@@ -123,28 +211,92 @@ function buildChart1(range) {
     }
     cd.push([count + ' events', lines.join('<br>')]);
   }
-  var ht = '<b>Time</b>: %{text} ms<br><b>Total Memory</b>: %{y:.3f} MB<br><b>Active</b>: %{customdata[0]}<br>%{customdata[1]}<extra></extra>';
-  Plotly.newPlot('chart1',[{ x:times, y:values, text:hoverTimes, type:'scatter', mode:'lines', name:'Total Memory',
+  var lineTrace = { x:times, y:values, text:hoverTimes, type:'scatter', mode:'lines', name:'Total Memory',
+    xaxis: 'x', yaxis: 'y',
     line:{ color:'#4e79a7', width:1.8 }, fill:'tozeroy', fillcolor:'rgba(78,121,167,0.12)',
-    hoveron:'points+fills', customdata:cd, hovertemplate:ht,
-    hoverlabel:{ bgcolor:'#fff', bordercolor:'#4e79a7', font:{ size:12 } }
-  }], {
-    xaxis:{ title:'Time (ms)', range:range, showticklabels:true,
-      tickmode:'array', tickvals:_chart1Ticks.tickvals, ticktext:_chart1Ticks.ticktext,
-      showgrid:true, gridcolor:'#eaeaea', zeroline:false, fixedrange:false },
-    yaxis:{ title:'Memory (MB)', showgrid:true, gridcolor:'#eaeaea', zeroline:true, tickformat:'.1f', fixedrange:true },
-    margin:{ l:70, r:30, t:10, b:50 }, height:350, hovermode:'x', hoverdistance:-1, dragmode:'pan', showlegend:false
-  }, { displaylogo:false, displayModeBar:true, modeBarButtonsToRemove:['lasso2d','select2d'], scrollZoom:true });
-  document.getElementById('chart1').on('plotly_relayout', function(edata) {
+    customdata:cd,
+    hovertemplate:'<b>Time</b>: %{text} ms<br><b>Total Memory</b>: %{y:.3f} MB<br><b>Active</b>: %{customdata[0]}<br>%{customdata[1]}<extra></extra>',
+    hoverlabel:{ bgcolor:'#fff', bordercolor:'#4e79a7', font:{ size:12 } } };
+
+  // ── 子图高度与垂直 domain（折线在上，甘特在下，共享 x 轴）──
+  // 甘特图高度随行数增长但封顶 1600px：行少时每行清晰（行高约 12px），
+  // 行多时封顶并靠 MAX_VISIBLE_BARS 裁剪 + y 轴抽稀 + 缩放提示控制可读性。
+  // 避免原 rowCount*16 在上万行时整体高度达数万 px 的问题。
+  var lineH = 300;
+  var ganttH = Math.min(1600, Math.max(280, rowCount * 12 + 80));
+  var gap = 40;
+  var total = lineH + ganttH + gap;
+  var yTopDomain = [(ganttH + gap) / total, 1];
+  var yBotDomain = [0, ganttH / total];
+
+  // 甘特 y 轴刻度（算子名）—— 行数过多时抽稀
+  var yVals = [], yTexts = [];
+  var labelStep = Math.max(1, Math.ceil(rowCount / 50));
+  for (var k = 0; k < rowCount; k += labelStep) {
+    yVals.push(k);
+    yTexts.push(OP_NAMES[GANTT_IDS[visible[k]]]);
+  }
+
+  var traces = [lineTrace].concat(ganttTraces);
+
+  // ⚠ 单个 Plotly figure，两子图共享左边距 → 绘图区域像素级对齐；
+  // xaxis 与 xaxis2 各自独立 range，靠 relayout 事件显式双向同步缩放/平移。
+  Plotly.newPlot('chart', traces, {
+    margin: { l: 280, r: 30, t: 20, b: 50 },
+    xaxis: { anchor: 'y', range: range,
+      title: '', showticklabels: true,
+      tickmode: 'array', tickvals: _chart1Ticks.tickvals, ticktext: _chart1Ticks.ticktext,
+      showgrid: true, gridcolor: '#eaeaea', zeroline: false, fixedrange: false },
+    yaxis: { anchor: 'x', domain: yTopDomain, title: 'Memory (MB)',
+      showgrid: true, gridcolor: '#eaeaea', zeroline: true, tickformat: '.1f', fixedrange: true },
+    xaxis2: { anchor: 'y2', range: range,
+      title: 'Time (ms)', showticklabels: false,
+      showgrid: true, gridcolor: '#eaeaea', zeroline: false, fixedrange: false },
+    yaxis2: { anchor: 'x2', domain: yBotDomain,
+      title: 'Allocation (sorted by start time)',
+      tickmode: 'array', tickvals: yVals, ticktext: yTexts,
+      autorange: 'reversed', showgrid: false, zeroline: false,
+      automargin: true, fixedrange: true },
+    barmode: 'overlay',
+    height: total,
+    hovermode: 'closest', hoverdistance: 50, dragmode: 'pan', showlegend: false,
+    annotations: capped ? [{
+      text: '⚠ ' + totalInRange + ' allocations in range — showing first ' + rowCount + ' by start time. Zoom in to see all.',
+      showarrow: false, x: 0.5, xref: 'paper', y: 1, yref: 'paper', yanchor: 'bottom',
+      font: { size: 11, color: '#e15759' }
+    }] : []
+  }, { displaylogo: false, displayModeBar: true, modeBarButtonsToRemove: ['lasso2d','select2d'], scrollZoom: true });
+
+  // 共享 x 轴：缩放/平移任一子图时显式同步另一子图。
+  // 不依赖 matches 隐式绑定（某些 Plotly 版本下 pan/zoom 仅更新触发轴，
+  // 从属轴不会自动重绘），这里显式 relayout 另一轴范围，确保双图始终对齐。
+  document.getElementById('chart').on('plotly_relayout', function(edata) {
     if (isSyncing) return;
-    if (edata['xaxis.range[0]']!==undefined||edata['xaxis.range[1]']!==undefined) {
-      // Read actual current range from chart layout (more reliable than event)
-      var layout = document.getElementById('chart1').layout;
-      if (layout && layout.xaxis && layout.xaxis.range) {
-        currentRange = [layout.xaxis.range[0], layout.xaxis.range[1]];
-      }
-      syncInputsFromRange(); buildChart2(currentRange); updateRangeInfo();
-      updateSegmentHint(currentRange);
+    var x1 = edata['xaxis.range[0]'], x2 = edata['xaxis2.range[0]'];
+    if (x1===undefined && edata['xaxis.range[1]']===undefined &&
+        x2===undefined && edata['xaxis2.range[1]']===undefined) return;
+    var layout = document.getElementById('chart').layout;
+    if (!layout) return;
+    // 取触发轴的最新范围作为真相源
+    var src;
+    if (x1!==undefined || edata['xaxis.range[1]']!==undefined) src = 'xaxis';
+    else src = 'xaxis2';
+    var ax = layout[src];
+    if (!ax || !ax.range) return;
+    currentRange = [ax.range[0], ax.range[1]];
+    var target = (src === 'xaxis') ? 'xaxis2' : 'xaxis';
+    isSyncing = true;
+    Plotly.relayout('chart', (target === 'xaxis2')
+      ? { 'xaxis2.range': currentRange }
+      : { 'xaxis.range': currentRange });
+    isSyncing = false;
+    syncInputsFromRange(); updateRangeInfo(); updateSegmentHint(currentRange);
+  });
+  document.getElementById('chart').on('plotly_click', function(data) {
+    if (!data.points||!data.points.length) return;
+    var pt = data.points[0];
+    if (pt.data && pt.data.type === 'bar') {
+      var i = pt.customdata; if (i!==undefined) showBarDetail(i);
     }
   });
 }
@@ -180,112 +332,6 @@ function updateSegmentHint(range) {
     + "<a href=\"" + segFile + "\" style=\"color:#e15759;font-weight:700\">Go →</a>";
   hint.style.display = "block";
 }
-function buildChart2(range) {
-  Plotly.purge('chart2');
-  // Step 1: Collect bar indices that overlap with the visible time range
-  var vi=[];
-  for (var i=0; i<GANTT_STARTS.length; i++)
-    if (GANTT_STARTS[i]+GANTT_DURS[i]>range[0]&&GANTT_STARTS[i]<range[1]) vi.push(i);
-
-  // Step 2: Sort visible bars by start time
-  vi.sort(function(a,b){ return GANTT_STARTS[a] - GANTT_STARTS[b]; });
-  var filteredBars = vi;
-
-  // Step 3: Group filtered bars by operator name (preserve time order)
-  var groups={}, opOrder=[];
-  for (var k=0; k<filteredBars.length; k++) {
-    var i=filteredBars[k], nm=OP_NAMES[GANTT_IDS[i]];
-    if (!groups[nm]) { groups[nm]=[]; opOrder.push(nm); }
-    groups[nm].push(i);
-  }
-
-  // Step 4: Sort each operator's bars by duration descending.
-  // Plotly draws bars in array order — last element on top.
-  // Long bars first, short bars last → short bars are always visible.
-  for (var k=0; k<opOrder.length; k++) {
-    groups[opOrder[k]].sort(function(a,b){
-      return GANTT_DURS[a] > GANTT_DURS[b] ? -1 : GANTT_DURS[a] < GANTT_DURS[b] ? 1 : 0;
-    });
-  }
-
-  // Step 5: Pre-compute overlap info per bar — for operators with dense bars,
-  // list all bars that overlap at the same time point so hover can show them.
-  var overlaps = {};  // barIdx → [{idx, size_kb, start, dur}, ...] or absent
-  for (var r=0; r<opOrder.length; r++) {
-    var indices = groups[opOrder[r]];
-    if (indices.length <= 1) continue;
-    // For each bar, count how many others overlap (at its midpoint)
-    for (var k=0; k<indices.length; k++) {
-      var idx = indices[k];
-      var tMid = GANTT_STARTS[idx] + GANTT_DURS[idx] / 2;
-      var ov = [];
-      for (var j=0; j<indices.length; j++) {
-        var oi = indices[j];
-        if (oi === idx) continue;
-        if (GANTT_STARTS[oi] <= tMid && GANTT_STARTS[oi] + GANTT_DURS[oi] >= tMid) {
-          ov.push(oi);
-        }
-      }
-      if (ov.length > 0) overlaps[idx] = ov;
-    }
-  }
-
-  var traces=[], yVals=[], yTexts=[], maxY=opOrder.length;
-  for (var r=0; r<opOrder.length; r++) {
-    var nm=opOrder[r], yp=maxY-1-r, cl=COLOR_MAP[nm]||'#999';
-    var indices=groups[nm];
-    var xs=[], bases=[], hts=[], cds=[];
-    for (var k=0; k<indices.length; k++) {
-      var idx=indices[k], sz=GANTT_SIZES[idx];
-      xs.push(GANTT_DURS[idx]);
-      bases.push(GANTT_STARTS[idx]);
-      cds.push(idx);
-      var ht = '<b>'+nm+'</b><br>Size: '+(sz/1024).toFixed(3)+' MB ('+sz.toFixed(1)+' KB)<br>Start: '+(GANTT_STARTS[idx]+T_OFFSET).toFixed(3)+' ms<br>Duration: '+GANTT_DURS[idx].toFixed(3)+' ms';
-      // Append overlap list if any
-      var ov = overlaps[idx];
-      if (ov && ov.length) {
-        ov.sort(function(a,b){ return GANTT_SIZES[b] - GANTT_SIZES[a]; });
-        var lines = [];
-        for (var j=0; j<Math.min(ov.length, 8); j++) {
-          var oi = ov[j];
-          lines.push((GANTT_SIZES[oi]/1024).toFixed(2) + ' MB, '
-            + (GANTT_STARTS[oi]+T_OFFSET).toFixed(0) + 'ms, '
-            + GANTT_DURS[oi].toFixed(1) + 'ms');
-        }
-        if (ov.length > 8) lines.push('... +' + (ov.length-8) + ' more');
-        ht += '<br><i>' + ov.length + ' overlapping:</i><br>'
-          + lines.join('<br>');
-      }
-      hts.push(ht);
-    }
-    yVals.push(yp); yTexts.push(nm);
-    traces.push({ x:xs, y:Array(indices.length).fill(yp), base:bases,
-      type:'bar', orientation:'h', name:nm, customdata:cds,
-      marker:{ color:cl,
-        line:{ color:'rgba(255,255,255,0)', width:6 } },
-      hovertext:hts, hoverinfo:'text',
-      hoverlabel:{ bgcolor:'#fff', bordercolor:cl, font:{ size:11 } }, showlegend:false });
-  }
-  Plotly.newPlot('chart2', traces, {
-    xaxis:{ title:'Time (ms)', range:range, showticklabels:false, showgrid:true, gridcolor:'#eaeaea', zeroline:false, fixedrange:false },
-    yaxis:{ title:'Operator', tickmode:'array', tickvals:yVals, ticktext:yTexts, autorange:'reversed', showgrid:false, zeroline:false, automargin:true, fixedrange:true },
-    barmode:'overlay', margin:{ l:280, r:30, t:10, b:50 }, height:Math.max(400,maxY*28+80), hovermode:'closest', hoverdistance:50, dragmode:'pan', showlegend:false
-  }, { displaylogo:false, displayModeBar:true, modeBarButtonsToRemove:['lasso2d','select2d'], scrollZoom:true });
-  document.getElementById('chart2').on('plotly_relayout', function(edata) {
-    if (isSyncing) return;
-    if (edata['xaxis.range[0]']!==undefined||edata['xaxis.range[1]']!==undefined) {
-      var layout = document.getElementById('chart2').layout;
-      if (layout && layout.xaxis && layout.xaxis.range) {
-        currentRange = [layout.xaxis.range[0], layout.xaxis.range[1]];
-      }
-      syncInputsFromRange(); updateChart1Range(currentRange); buildChart2(currentRange); updateRangeInfo();
-    }
-  });
-  document.getElementById('chart2').on('plotly_click', function(data) {
-    if (!data.points||!data.points.length) return; var i=data.points[0].customdata; if (i!==undefined) showBarDetail(i);
-  });
-}
-
 function showBarDetail(i) {
   var panel=document.getElementById('detail-panel'), c=document.getElementById('detail-content');
   var nm = OP_NAMES[GANTT_IDS[i]];
@@ -295,16 +341,24 @@ function showBarDetail(i) {
   var csHtml = cs
     ? '<span class="label">Call Stack:</span><div class="call-stack-box">'+escHtml(cs)+'</div>'
     : '<span class="label">Call Stack:</span><span class="value" style="color:#999">(empty)</span>';
-  // Find overlapping bars of same operator — scan all bars in this segment
+  // Find overlapping bars of same operator — 用预建 per-op 索引 + 二分查找
+  // 替代原来的全量线性扫描（原 O(n) 扫整个 segment，现只扫该 operator 的 bar）。
   var tMid = GANTT_STARTS[i] + GANTT_DURS[i] / 2;
   var ovList = '';
   var hits = [];
-  for (var k = 0; k < GANTT_STARTS.length; k++) {
-    if (k === i) continue;
-    if (OP_NAMES[GANTT_IDS[k]] !== nm) continue;
-    if (GANTT_STARTS[k] <= tMid && GANTT_STARTS[k] + GANTT_DURS[k] >= tMid) {
-      hits.push(k);
-    }
+  var bars = opToBars[nm] || [];
+  // bars 按 start 升序。二分找最后一个 start <= tMid 的位置 glo（即 [0, glo) 满足 start <= tMid）
+  var glo = 0, ghi = bars.length;
+  while (glo < ghi) {
+    var gm = (glo + ghi) >> 1;
+    if (GANTT_STARTS[bars[gm]] <= tMid) glo = gm + 1;
+    else ghi = gm;
+  }
+  // 在 [0, glo) 内检查 end >= tMid（start 升序但 end 不一定，故不能提前 break）
+  for (var k = glo - 1; k >= 0; k--) {
+    var oi = bars[k];
+    if (oi === i) continue;
+    if (GANTT_STARTS[oi] + GANTT_DURS[oi] >= tMid) hits.push(oi);
   }
   if (hits.length > 0) {
     hits.sort(function(a,b){ return GANTT_SIZES[b] - GANTT_SIZES[a]; });
@@ -332,7 +386,6 @@ function showBarDetail(i) {
 }
 function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
-function updateChart1Range(range) { isSyncing=true; Plotly.relayout('chart1',{ 'xaxis.range':range }); isSyncing=false; }
 function syncInputsFromRange() {
   leftInput.value=(currentRange[0]+T_OFFSET).toFixed(3); rightInput.value=(currentRange[1]+T_OFFSET).toFixed(3);
   leftInput.classList.remove('invalid'); rightInput.classList.remove('invalid');
@@ -341,16 +394,19 @@ function onLeftChange() {
   if (isSyncing) return; var v=parseFloat(leftInput.value)-T_OFFSET;
   if (isNaN(v)||v<T_MIN||v>=currentRange[1]) { leftInput.classList.add('invalid'); return; }
   leftInput.classList.remove('invalid'); currentRange[0]=v; isSyncing=true;
-  Plotly.relayout('chart1',{ 'xaxis.range':currentRange }); buildChart2(currentRange); isSyncing=false; updateRangeInfo();
+  Plotly.relayout('chart',{ 'xaxis.range':currentRange, 'xaxis2.range':currentRange }); isSyncing=false; updateRangeInfo(); updateSegmentHint(currentRange);
 }
 function onRightChange() {
   if (isSyncing) return; var v=parseFloat(rightInput.value)-T_OFFSET;
   if (isNaN(v)||v>T_MAX||v<=currentRange[0]) { rightInput.classList.add('invalid'); return; }
   rightInput.classList.remove('invalid'); currentRange[1]=v; isSyncing=true;
-  Plotly.relayout('chart1',{ 'xaxis.range':currentRange }); buildChart2(currentRange); isSyncing=false; updateRangeInfo();
+  Plotly.relayout('chart',{ 'xaxis.range':currentRange, 'xaxis2.range':currentRange }); isSyncing=false; updateRangeInfo(); updateSegmentHint(currentRange);
 }
 function updateRangeInfo() {
-  var cnt=0, ops={}; for (var i=0; i<GANTT_STARTS.length; i++) if (GANTT_STARTS[i]+GANTT_DURS[i]>currentRange[0]&&GANTT_STARTS[i]<currentRange[1]) {
+  var cnt=0, ops={};
+  // 二分缩小右边界，只扫 [0, rightExcl)，与 buildCharts 同策略
+  var rightExcl = upperBound(GANTT_STARTS, currentRange[1]);
+  for (var i=0; i<rightExcl; i++) if (_ganttEnds[i]>currentRange[0]) {
     cnt++; ops[OP_NAMES[GANTT_IDS[i]]]=1;
   }
   var nOps = Object.keys(ops).length;
@@ -359,7 +415,7 @@ function updateRangeInfo() {
 leftInput.addEventListener('change', onLeftChange); leftInput.addEventListener('keydown', function(e){if(e.key==='Enter')onLeftChange()});
 rightInput.addEventListener('change', onRightChange); rightInput.addEventListener('keydown', function(e){if(e.key==='Enter')onRightChange()});
 leftInput.value=T_OFFSET.toFixed(3); rightInput.value=(T_MAX+T_OFFSET).toFixed(3);
-buildChart1(currentRange); buildChart2(currentRange); updateRangeInfo();
+buildCharts(currentRange); updateRangeInfo();
 </script>
 </body>
 </html>

@@ -37,7 +37,8 @@ def test_memory_e2e_with_sample_data(monkeypatch, tmp_path):
 
     main()
 
-    html_file = output_dir / "memory_timeline_00.html"
-    data_file = output_dir / "detail_data_00.js"
+    # data uses role="memory_data", rank_id=0, single segment.
+    html_file = output_dir / "memory_timeline_memory_data_rank0_00.html"
+    data_file = output_dir / "detail_data_memory_data_rank0_00.js"
     assert html_file.exists(), f"Missing: {html_file}"
     assert data_file.exists(), f"Missing: {data_file}"
