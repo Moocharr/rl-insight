@@ -174,7 +174,7 @@ function updateSegmentHint(range) {
   }
   var absStart = (best[1] + T_OFFSET).toFixed(0);
   var absEnd = (best[2] + T_OFFSET).toFixed(0);
-  var segFile = "memory_timeline_" + String(best[0]).padStart(2, "0") + ".html";
+  var segFile = "memory_timeline_" + (RANK_PREFIX ? RANK_PREFIX + "_" : "") + String(best[0]).padStart(2, "0") + ".html";
   hint.innerHTML = "&#128269; Best: Seg " + (best[0] + 1)
     + " (" + absStart + "–" + absEnd + " ms) "
     + "<a href=\"" + segFile + "\" style=\"color:#e15759;font-weight:700\">Go →</a>";

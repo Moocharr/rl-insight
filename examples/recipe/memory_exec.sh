@@ -24,10 +24,10 @@ cmd="python -m recipe.main \
 echo ">>> Generating memory allocation timeline..."
 eval ${cmd}
 
-if [ -f "${OUTPUT_PATH}/memory_timeline_00.html" ]; then
+if ls ${OUTPUT_PATH}/memory_timeline_*_00.html 1> /dev/null 2>&1; then
     echo "=========================================="
     echo ">>> Memory timeline generated successfully!"
-    echo ">>> Output saved to: ${OUTPUT_PATH}/memory_timeline_00.html"
+    echo ">>> Output saved to: ${OUTPUT_PATH}/"
     echo "=========================================="
 else
     echo "=========================================="

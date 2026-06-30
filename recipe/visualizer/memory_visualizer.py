@@ -66,11 +66,14 @@ class MemoryVisualizer(BaseVisualizer):
         Includes interactive controls for time-range selection and operator
         count filtering.
 
+        Each (role, rank_id) group produces its own set of HTML files.
+
         Args:
             data: Preprocessed DataFrame with columns: name, size_kb,
                   start_time_ms, duration_ms, total_allocated_mb,
                   total_reserved_mb, total_active_mb, device_type,
-                  call_stack_top.  Only positive allocations (size_kb > 0).
+                  call_stack_top, role, rank_id.  Only positive allocations
+                  (size_kb > 0).
         """
         logger.info(
             f"Starting memory timeline generation: "
@@ -90,9 +93,45 @@ class MemoryVisualizer(BaseVisualizer):
 
         logger.info(f"Filtered to {len(data)} positive allocation events")
 
-        # Compute end times and size in MB
+        # Group by (role, rank_id) and generate one HTML per rank
+        if "role" in data.columns and "rank_id" in data.columns:
+            groups = data.groupby(["role", "rank_id"])
+        else:
+            groups = [(None, data)]
+
+        first_output = None
+        for group_key, group_data in groups:
+            if isinstance(group_key, tuple):
+                role, rank_id = group_key
+                logger.info(
+                    f"Generating memory timeline for role={role}, rank_id={rank_id} "
+                    f"({len(group_data)} events)"
+                )
+            else:
+                role, rank_id = None, None
+                logger.info(
+                    f"Generating memory timeline ({len(group_data)} events)"
+                )
+
+            result = self._generate_single_timeline(group_data, role, rank_id)
+            if first_output is None and result is not None:
+                first_output = result
+
+        return first_output
+
+    def _generate_single_timeline(
+        self, data: pd.DataFrame, role, rank_id
+    ):
+        """Generate memory timeline HTML for a single (role, rank_id) group."""
+        data = data.copy()
+
         data["end_time_ms"] = data["start_time_ms"] + data["duration_ms"]
         data["size_mb"] = data["size_kb"] * self._KB_TO_MB
+
+        if role is not None and rank_id is not None:
+            rank_prefix = f"{role}_rank{rank_id}"
+        else:
+            rank_prefix = None
 
         # ── Global time range ─────────────────────────────────────────
         # data is pre-sorted by start_time_ms
@@ -302,18 +341,24 @@ class MemoryVisualizer(BaseVisualizer):
                 num_segments=num_segments,
                 seg_data=seg_data,
                 t_rel_max=t_rel_max,
+                rank_prefix=rank_prefix,
             )
 
-            data_path = os.path.join(output_dir, f"detail_data_{seg_idx:02d}.js")
-            html_path = os.path.join(output_dir, f"memory_timeline_{seg_idx:02d}.html")
+            if rank_prefix:
+                data_path = os.path.join(output_dir, f"detail_data_{rank_prefix}_{seg_idx:02d}.js")
+                html_path = os.path.join(output_dir, f"memory_timeline_{rank_prefix}_{seg_idx:02d}.html")
+            else:
+                data_path = os.path.join(output_dir, f"detail_data_{seg_idx:02d}.js")
+                html_path = os.path.join(output_dir, f"memory_timeline_{seg_idx:02d}.html")
             with open(data_path, "w", encoding="utf-8") as f:
                 f.write(detail_js)
             with open(html_path, "w", encoding="utf-8") as f:
                 f.write(html)
 
+            html_name = os.path.basename(html_path)
             logger.info(
                 f"  [{seg_idx + 1}/{num_segments}] "
-                f"memory_timeline_{seg_idx:02d}.html "
+                f"{html_name} "
                 f"({len(html) / 1024:.0f} KB HTML + "
                 f"{len(detail_js) / 1024:.0f} KB data) "
                 f"— {len(bar_indices)} events, "
@@ -326,6 +371,8 @@ class MemoryVisualizer(BaseVisualizer):
             f"{len(segments)} segment(s), {total_bar_count} events, "
             f"{len(op_names)} operators → {output_dir}"
         )
+        if rank_prefix:
+            return os.path.join(output_dir, f"memory_timeline_{rank_prefix}_00.html")
         return os.path.join(output_dir, "memory_timeline_00.html")
 
     @staticmethod
@@ -406,6 +453,7 @@ class MemoryVisualizer(BaseVisualizer):
         num_segments,
         seg_data,
         t_rel_max,
+        rank_prefix=None,
     ):
         """Build HTML + detail_data.js for one time segment.
 
@@ -434,6 +482,7 @@ class MemoryVisualizer(BaseVisualizer):
             "var SEGMENTS = " + to_json(seg_data, **compact_opts) + ";",
             "var T_REL_MAX = " + to_json(t_rel_max) + ";",
             "var SEG_INDEX = " + str(seg_idx) + ";",
+            "var RANK_PREFIX = " + to_json(rank_prefix or "", **compact_opts) + ";",
         ]
         detail_js = "\n".join(detail_lines)
 
@@ -443,9 +492,9 @@ class MemoryVisualizer(BaseVisualizer):
             html = f.read()
 
         # Inject segment navigation and data file reference
-        data_filename = f"detail_data_{seg_idx:02d}.js"
+        data_filename = f"detail_data_{rank_prefix}_{seg_idx:02d}.js" if rank_prefix else f"detail_data_{seg_idx:02d}.js"
         nav_html = self._build_segment_nav(
-            seg_idx, seg_label, num_segments, global_bar_count
+            seg_idx, seg_label, num_segments, global_bar_count, rank_prefix
         )
         html = html.replace("__SEGMENT_NAV__", nav_html)
         html = html.replace("__SEGMENT_LABEL__", seg_label)
@@ -454,15 +503,16 @@ class MemoryVisualizer(BaseVisualizer):
         return html, detail_js
 
     @staticmethod
-    def _build_segment_nav(seg_idx, seg_label, num_segments, global_bar_count):
+    def _build_segment_nav(seg_idx, seg_label, num_segments, global_bar_count, rank_prefix=None):
         """Build segment navigation HTML snippet."""
+        prefix = f"memory_timeline_{rank_prefix}" if rank_prefix else "memory_timeline"
         parts = [
             '<div class="control-group" style="border-left:2px solid #eee;'
             'padding-left:16px;gap:4px">'
         ]
         if seg_idx > 0:
             parts.append(
-                f'<a href="memory_timeline_{seg_idx - 1:02d}.html" '
+                f'<a href="{prefix}_{seg_idx - 1:02d}.html" '
                 f'style="text-decoration:none;color:#4e79a7;font-size:13px;'
                 f'padding:4px 8px;border:1px solid #4e79a7;border-radius:4px"'
                 f">← Prev</a>"
@@ -473,7 +523,7 @@ class MemoryVisualizer(BaseVisualizer):
         )
         if seg_idx < num_segments - 1:
             parts.append(
-                f'<a href="memory_timeline_{seg_idx + 1:02d}.html" '
+                f'<a href="{prefix}_{seg_idx + 1:02d}.html" '
                 f'style="text-decoration:none;color:#4e79a7;font-size:13px;'
                 f'padding:4px 8px;border:1px solid #4e79a7;border-radius:4px"'
                 f">Next →</a>"
