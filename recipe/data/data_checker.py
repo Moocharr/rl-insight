@@ -23,6 +23,8 @@ from loguru import logger
 from .rules import (
     DataValidationError,
     MemoryContentRule,
+    AscendMemoryFileExistsRule,
+    AscendMemoryFieldValidRule,
     ParserOutputValidatorRule,
     MstxJsonFileExistsRule,
     MstxJsonFieldValidRule,
@@ -83,7 +85,11 @@ class DataChecker:
         DataEnum.GMM_SUMMARY: [
             ParserOutputValidatorRule(domains=list(GMMKEYS)),
         ],
-        DataEnum.ASCEND_MEMORY: [],
+        DataEnum.ASCEND_MEMORY: [
+            PathExistsRule(),
+            AscendMemoryFileExistsRule(),
+            AscendMemoryFieldValidRule(),
+        ],
         DataEnum.MEMORY_SUMMARY: [
             ParserOutputValidatorRule(domains=list(MEMORYKEYS)),
             MemoryContentRule(),

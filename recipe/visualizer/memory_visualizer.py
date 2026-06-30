@@ -109,9 +109,7 @@ class MemoryVisualizer(BaseVisualizer):
                 )
             else:
                 role, rank_id = None, None
-                logger.info(
-                    f"Generating memory timeline ({len(group_data)} events)"
-                )
+                logger.info(f"Generating memory timeline ({len(group_data)} events)")
 
             result = self._generate_single_timeline(group_data, role, rank_id)
             if first_output is None and result is not None:
@@ -119,9 +117,7 @@ class MemoryVisualizer(BaseVisualizer):
 
         return first_output
 
-    def _generate_single_timeline(
-        self, data: pd.DataFrame, role, rank_id
-    ):
+    def _generate_single_timeline(self, data: pd.DataFrame, role, rank_id):
         """Generate memory timeline HTML for a single (role, rank_id) group."""
         data = data.copy()
 
@@ -179,10 +175,10 @@ class MemoryVisualizer(BaseVisualizer):
         gantt_durations = []
         gantt_sizes = []
         total_alloc_arr = []
-        call_stack_pool = []
+        call_stack_pool: list[str] = []
         call_stack_pool_map = {}
         call_stack_idx_arr = []
-        op_names = []
+        op_names: list[str] = []
         name_to_id = {}
 
         # Pre-extract columns to avoid iterrows() per-row Series overhead.
@@ -345,11 +341,17 @@ class MemoryVisualizer(BaseVisualizer):
             )
 
             if rank_prefix:
-                data_path = os.path.join(output_dir, f"detail_data_{rank_prefix}_{seg_idx:02d}.js")
-                html_path = os.path.join(output_dir, f"memory_timeline_{rank_prefix}_{seg_idx:02d}.html")
+                data_path = os.path.join(
+                    output_dir, f"detail_data_{rank_prefix}_{seg_idx:02d}.js"
+                )
+                html_path = os.path.join(
+                    output_dir, f"memory_timeline_{rank_prefix}_{seg_idx:02d}.html"
+                )
             else:
                 data_path = os.path.join(output_dir, f"detail_data_{seg_idx:02d}.js")
-                html_path = os.path.join(output_dir, f"memory_timeline_{seg_idx:02d}.html")
+                html_path = os.path.join(
+                    output_dir, f"memory_timeline_{seg_idx:02d}.html"
+                )
             with open(data_path, "w", encoding="utf-8") as f:
                 f.write(detail_js)
             with open(html_path, "w", encoding="utf-8") as f:
@@ -492,7 +494,11 @@ class MemoryVisualizer(BaseVisualizer):
             html = f.read()
 
         # Inject segment navigation and data file reference
-        data_filename = f"detail_data_{rank_prefix}_{seg_idx:02d}.js" if rank_prefix else f"detail_data_{seg_idx:02d}.js"
+        data_filename = (
+            f"detail_data_{rank_prefix}_{seg_idx:02d}.js"
+            if rank_prefix
+            else f"detail_data_{seg_idx:02d}.js"
+        )
         nav_html = self._build_segment_nav(
             seg_idx, seg_label, num_segments, global_bar_count, rank_prefix
         )
@@ -503,7 +509,9 @@ class MemoryVisualizer(BaseVisualizer):
         return html, detail_js
 
     @staticmethod
-    def _build_segment_nav(seg_idx, seg_label, num_segments, global_bar_count, rank_prefix=None):
+    def _build_segment_nav(
+        seg_idx, seg_label, num_segments, global_bar_count, rank_prefix=None
+    ):
         """Build segment navigation HTML snippet."""
         prefix = f"memory_timeline_{rank_prefix}" if rank_prefix else "memory_timeline"
         parts = [
