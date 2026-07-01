@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Memory Timeline</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f5f5f5; color: #333; padding: 20px; }
+.container { max-width: 1600px; margin: 0 auto; }
+h1 { text-align: center; margin-bottom: 10px; font-size: 20px; }
+.chart-box { background: #fff; border: 1px solid #ddd; border-radius: 6px; margin-bottom: 12px; padding: 8px 12px 4px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+.chart-box h3 { font-size: 14px; margin-bottom: 4px; color: #555; }
+#chart { width: 100%; }
+.controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 14px 18px; margin-bottom: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+.control-group { display: flex; align-items: center; gap: 6px; }
+.control-group label { font-weight: 600; font-size: 13px; white-space: nowrap; color: #555; }
+.control-group input { border: 1px solid #ccc; border-radius: 4px; padding: 5px 8px; font-size: 13px; width: 130px; font-family: 'Consolas', monospace; }
+.control-group input:focus { outline: none; border-color: #4e79a7; box-shadow: 0 0 0 2px rgba(78,121,167,.2); }
+.control-group input.invalid { border-color: #e15759; background: #fff0f0; }
+.control-group .unit { font-size: 11px; color: #999; }
+.legend-note { font-size: 12px; color: #888; margin-left: 8px; }
+.detail-panel { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 16px 20px; margin-bottom: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08); display: none; }
+.detail-panel.active { display: block; }
+.detail-panel h3 { font-size: 14px; margin-bottom: 10px; color: #333; }
+.detail-grid { display: grid; grid-template-columns: 160px 1fr; gap: 6px 12px; font-size: 13px; }
+.detail-grid .label { font-weight: 600; color: #666; text-align: right; }
+.detail-grid .value { color: #333; word-break: break-all; font-family: 'Consolas', monospace; }
+.call-stack-box { grid-column: 2; background: #f8f8f8; border: 1px solid #e0e0e0; border-radius: 4px; padding: 10px 14px; font-family: 'Consolas', monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; max-height: 350px; overflow-y: auto; color: #444; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>Memory Allocation Timeline</h1>
+<div class="controls">
+<div class="control-group"><label for="range-left">Left:</label><input type="number" id="range-left" step="any" /><span class="unit">ms</span></div>
+<div class="control-group"><label for="range-right">Right:</label><input type="number" id="range-right" step="any" /><span class="unit">ms</span></div>
+<div class="legend-note" id="range-info"></div>
+</div>
+<div class="chart-box"><h3>Memory Usage (top) &amp; Allocation Gantt (bottom) — shared time axis | one row per allocation, sorted by start time</h3><div id="chart-wrap" style="position:relative"><div id="chart"></div><div id="gantt-vscroll" style="position:absolute;right:0;top:0;width:14px;overflow-y:scroll;overflow-x:hidden;display:none;background:rgba(0,0,0,0.02)"><div id="gantt-scroll-inner" style="width:1px;height:1px"></div></div><span id="gantt-scroll-label" style="position:absolute;right:18px;font-size:11px;color:#888;display:none"></span></div><div id="gantt-footer" style="display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:6px 4px 2px;font-size:12px;color:#888"><span id="gantt-pos">1–20</span><span style="color:#bbb">·</span><label for="gantt-rows" style="font-weight:600;color:#555;cursor:pointer" title="Number of gantt rows visible (row height zoom)">Rows:</label><input type="number" id="gantt-rows" min="5" step="5" value="100" style="width:70px;border:1px solid #ccc;border-radius:4px;padding:3px 6px;font-size:12px;font-family:'Consolas',monospace" title="窗口行数（行高缩放）。大窗口看整体分布，小窗口看细节；窗口超过 2000 行时自动均匀抽样绘制以保证流畅。行号/总数始终基于全局事件总数。" /></div></div>
+<div class="detail-panel" id="detail-panel"><h3>Operator Detail</h3><div class="detail-grid" id="detail-content"></div></div>
+</div>
+<script src="detail_data_memory_profile_rank0.js"></script>
+<script>
+var T_MIN = 0;
+var T_MAX = GANTT_STARTS[GANTT_STARTS.length-1] + GANTT_DURS[GANTT_DURS.length-1];
+var currentRange = [T_MIN, T_MAX];
+
+// ── 预计算 end 数组（避免重复加法）────────────────────────
+var _ganttEnds = new Array(GANTT_STARTS.length);
+for (var k=0; k<GANTT_STARTS.length; k++) _ganttEnds[k] = GANTT_STARTS[k] + GANTT_DURS[k];
+
+// ── 二分查找工具（在已升序数组上）────────────────────────
+function lowerBound(arr, val) {
+  var lo = 0, hi = arr.length;
+  while (lo < hi) { var mid = (lo + hi) >> 1; if (arr[mid] < val) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+function upperBound(arr, val) {
+  var lo = 0, hi = arr.length;
+  while (lo < hi) { var mid = (lo + hi) >> 1; if (arr[mid] <= val) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+
+// 后端已预计算 TL_ACTIVE[i]=[count, [[name,size_kb],...]]（top-10 by size），直接复用，
+// 避免在浏览器对百万级长生命周期 bar 做 O(TL_XY × active × log) 的两指针扫描+排序（加载即卡死）。
+// 兼容旧数据：旧后端在 active 为空时跳过 append，TL_ACTIVE 可能比 TL_XY 短；
+// 末尾补 [0,[]] 对齐（缺失点恒为末尾的空活跃点），对已对齐的新数据为 no-op。
+var segActive = TL_ACTIVE.slice();
+while (segActive.length < TL_XY.length) segActive.push([0, []]);
+var isSyncing = false;
+var leftInput = document.getElementById('range-left');
+var rightInput = document.getElementById('range-right');
+var rangeInfo = document.getElementById('range-info');
+var ganttRowsInput = document.getElementById('gantt-rows');
+var ganttScroll = document.getElementById('gantt-vscroll');
+var ganttPos = document.getElementById('gantt-pos');
+
+// 甘特图行窗口状态：start=可见行起点（全局行号），count=可见行数（控制行高缩放）。
+// 行号采用全局固定编号（事件在 GANTT_STARTS 中的原始索引，后端已按 start 升序）；
+// 时间范围变化只过滤哪些 bar 被绘制（x 维度裁剪），不重排行号、不改总数。
+// 行窗口变化由 applyGanttView relayout/react。
+// count 默认取较大值（性能已优化，尽量一次显示更多行），用户可在甘特图下方 Rows 输入框调节。
+var ganttView = { start: 0, count: 100 };
+// 单次绘制 bar 数上限：当 Rows 窗口行数超过此值时，buildGanttTraces 会均匀抽样到此数量绘制。
+// 这样大窗口（看整体分布）不卡顿，小窗口（< 此值）全量绘制看细节。行号/总数基于全局 N，不受影响。
+var MAX_DRAW_BARS = 2000;
+// _lastVisible=全量事件索引 [0..N-1]（按 start 升序的原始索引），_lastRowCount=全局总数 N（固定不变）
+var _lastVisible = [];
+var _lastRowCount = 0;
+// 一次性初始化全量索引：行号=全局原始索引。缩放时间轴不重建，保证行号/总数稳定不变。
+function ensureAllVisible() {
+  if (_lastRowCount > 0) return;
+  var n = GANTT_STARTS.length;
+  var arr = new Array(n);
+  for (var i = 0; i < n; i++) arr[i] = i;
+  _lastVisible = arr;
+  _lastRowCount = n;
+}
+
+// Pre-compute Chart1 x-axis tick labels in absolute time
+function makeTickInfo(t0, t1) {
+  var span = t1 - t0;
+  if (span <= 0) span = 1;
+  var tickStep = Math.pow(10, Math.floor(Math.log10(span)));
+  var niceTick = span / tickStep;
+  if (niceTick <= 2) tickStep /= 5;
+  else if (niceTick <= 5) tickStep /= 2;
+  var firstTick = Math.floor(t0 / tickStep) * tickStep;
+  var vals=[], texts=[];
+  for (var v = firstTick; v <= t1; v += tickStep) {
+    vals.push(v); texts.push((v + T_OFFSET).toFixed(0));
+  }
+  return { tickvals: vals, ticktext: texts };
+}
+
+function buildCharts(range) {
+  // 取消挂起的滚动重建定时器，避免其 Plotly.react 与下面的 purge/newPlot 竞争，
+  // 导致子图域错位/重叠或渲染中间态（缩放横轴后甘特图与折线图重叠、无内容的根因之一）。
+  if (_ganttScrollTimer) { clearTimeout(_ganttScrollTimer); _ganttScrollTimer = null; }
+  Plotly.purge('chart');
+
+  // ── 甘特数据准备（行号=全局固定索引，时间范围仅过滤绘制）────────
+  // ensureAllVisible 一次性生成全量索引 [0..N-1]（后端已按 start 升序），_lastRowCount=全局总数 N。
+  // 时间范围变化不重建 _lastVisible，故行号与总数稳定不变（全局固定）。
+  ensureAllVisible();
+  var rowCount = _lastRowCount;
+
+  // 统计当前时间范围内事件数（仅用于顶部 annotation 提示，不影响行号/总数）
+  var rightExcl = upperBound(GANTT_STARTS, range[1]);
+  var totalInRange = 0;
+  for (var i = 0; i < rightExcl; i++) {
+    if (_ganttEnds[i] > range[0]) totalInRange++;
+  }
+
+  // ── 折线图数据（内存使用趋势 + 活跃算子明细）──────────────
+  var times=[], values=[], hoverTimes=[], cd=[];
+  for (var i=0; i<TL_XY.length; i++) {
+    var p=TL_XY[i];
+    times.push(p[0]); values.push(p[1]);
+    hoverTimes.push((p[0]+T_OFFSET).toFixed(3));
+    var sa = segActive[i];
+    var count = sa[0], topList = sa[1];
+    var lines = [];
+    for (var j=0; j<topList.length; j++) {
+      lines.push('<span style="color:#888">' + escHtml(topList[j][0])
+        + '</span>: ' + (topList[j][1]/1024).toFixed(2) + ' MB');
+    }
+    cd.push([count + ' events', lines.join('<br>')]);
+  }
+  var lineTrace = { x:times, y:values, text:hoverTimes, type:'scatter', mode:'lines', name:'Total Memory',
+    xaxis: 'x', yaxis: 'y',
+    line:{ color:'#4e79a7', width:1.8 }, fill:'tozeroy', fillcolor:'rgba(78,121,167,0.12)',
+    customdata:cd,
+    hovertemplate:'<b>Time</b>: %{text} ms<br><b>Total Memory</b>: %{y:.3f} MB<br><b>Active</b>: %{customdata[0]}<br>%{customdata[1]}<extra></extra>',
+    hoverlabel:{ bgcolor:'#fff', bordercolor:'#4e79a7', font:{ size:12 } } };
+
+  // ── 子图高度与垂直 domain（折线在上，甘特在下，共享 x 轴）──
+  // 甘特图固定高度，行高 = ganttH / ganttView.count，由右侧行窗口控件缩放/滚动，
+  // 不再随 rowCount 增长导致整体高度爆炸或行高过细。
+  var lineH = 300;
+  var ganttH = 620;
+  var gap = 40;
+  var total = lineH + ganttH + gap;
+  var yTopDomain = [(ganttH + gap) / total, 1];
+  var yBotDomain = [0, ganttH / total];
+
+  // 行窗口 clamp（时间范围变化后 rowCount 可能变小）。
+  // count 不设绘制上限——大窗口（看整体）由 buildGanttTraces 内均匀抽样到 MAX_DRAW_BARS 控制绘制量。
+  ganttView.count = Math.max(5, Math.min(rowCount, parseInt(ganttRowsInput.value) || 100));
+  ganttView.start = Math.max(0, Math.min(rowCount - ganttView.count, ganttView.start));
+  var lo = ganttView.start, hi = ganttView.start + ganttView.count;
+
+  // 虚拟滚动：只渲染当前窗口 [lo, hi) 内的 bar（bar 的 y=真实行号），全量数据存于 _lastVisible
+  var ganttTraces = buildGanttTraces(lo, hi);
+
+  // 甘特 y 轴刻度：显示行号（1-based 序号），缩放时不拥挤；算子名在 hover/click 中查看
+  var yVals = [], yTexts = [];
+  var labelStep = Math.max(1, Math.ceil(ganttView.count / 20));
+  for (var k = lo; k < hi; k += labelStep) {
+    yVals.push(k);
+    yTexts.push(String(k + 1));
+  }
+
+  var traces = [lineTrace].concat(ganttTraces);
+
+  // ⚠ 单个 Plotly figure，两子图共享左边距 → 绘图区域像素级对齐。
+  // 横轴联动用 Plotly 原生 matches：xaxis2.matches='x' 使 x2 永远镜像 x 的 range，
+  // pan/zoom 任一子图时 Plotly 内部自动同步，无需 JS 事件，稳定可靠。
+  // 刻度用 nticks 让 Plotly 自动选择 nice 刻度，随 range 自适应缩放，避免拥挤。
+  var newPlotPromise = Plotly.newPlot('chart', traces, {
+    margin: { l: 90, r: 48, t: 20, b: 50 },
+    xaxis: { anchor: 'y', range: range,
+      title: '', showticklabels: true,
+      tickmode: 'auto', nticks: 10, tickformat: '.0f',
+      showgrid: true, gridcolor: '#eaeaea', zeroline: false, fixedrange: false },
+    yaxis: { anchor: 'x', domain: yTopDomain, title: 'Memory (MB)',
+      showgrid: true, gridcolor: '#eaeaea', zeroline: true, tickformat: '.1f', fixedrange: true },
+    xaxis2: { anchor: 'y2', matches: 'x',
+      title: 'Time (ms)', showticklabels: true,
+      tickmode: 'auto', nticks: 10, tickformat: '.0f',
+      showgrid: true, gridcolor: '#eaeaea', zeroline: false, fixedrange: false },
+    yaxis2: { anchor: 'x2', domain: yBotDomain,
+      title: 'Allocation (sorted by start time)',
+      range: [hi + 0.5, lo - 0.5], autorange: false,
+      tickmode: 'array', tickvals: yVals, ticktext: yTexts,
+      showgrid: false, zeroline: false, fixedrange: true },
+    barmode: 'overlay',
+    height: total,
+    hovermode: 'closest', hoverdistance: 50, dragmode: 'pan', showlegend: false,
+    annotations: totalInRange > 100000 ? [{
+      text: '⚠ ' + totalInRange + ' allocations in range — scroll the gantt (right scrollbar) or raise Rows to browse; zoom the time axis to reduce events.',
+      showarrow: false, x: 0.5, xref: 'paper', y: 1, yref: 'paper', yanchor: 'bottom',
+      font: { size: 11, color: '#e15759' }
+    }] : []
+  }, { displaylogo: false, displayModeBar: true, modeBarButtonsToRemove: ['lasso2d','select2d'], scrollZoom: true });
+
+  // 按甘特图子图的实际像素区域定位右侧垂直滚动条（仅当行数 > 窗口时显示）
+  // 用 requestAnimationFrame 等待 Plotly 完成 _fullLayout 像素计算后再定位
+  requestAnimationFrame(positionGanttScroll);
+
+  // 事件监听器：必须在 newPlot 之后绑定（此时 #chart 才有 .on 方法）。
+  // Plotly.purge 会移除旧监听器，故每次 buildCharts 末尾重新绑定不会累加。
+  var gd = document.getElementById('chart');
+  // 横轴联动已由 xaxis2.matches='x' 原生处理（Plotly 内部自动镜像 range）。
+  // 此 handler 仅在缩放/平移结束后刷新输入框、范围信息与段落提示等 UI 状态。
+  // 不做边界 clamp：clamp 会在每次越界时触发 Plotly.relayout，与 plotly_relayout 事件
+  // 形成往返，导致缩放一卡一卡。允许自由缩放（含越界空白区），buildCharts 用二分过滤
+  // 仍正确，超界只是显示更多空白，不影响数据正确性。
+  gd.on('plotly_relayout', function(edata) {
+    if (isSyncing) return;
+    var x1 = edata['xaxis.range[0]'], x2 = edata['xaxis2.range[0]'];
+    if (x1===undefined && edata['xaxis.range[1]']===undefined &&
+        x2===undefined && edata['xaxis2.range[1]']===undefined) return;
+    var layout = gd.layout;
+    if (!layout || !layout.xaxis || !layout.xaxis.range) return;
+    var newRange = [layout.xaxis.range[0], layout.xaxis.range[1]];
+    if (Math.abs(newRange[0]-currentRange[0])<1e-9 && Math.abs(newRange[1]-currentRange[1])<1e-9) return;
+    currentRange = newRange;
+    syncInputsFromRange(); scheduleAfterRelayout();
+  });
+  gd.on('plotly_click', function(data) {
+    if (!data.points||!data.points.length) return;
+    var pt = data.points[0];
+    if (pt.data && pt.data.type === 'bar') {
+      var i = pt.customdata; if (i!==undefined) showBarDetail(i);
+    }
+  });
+  // 返回 newPlot 的 Promise：newPlot/react 是异步的，调用方需在其 resolve 后执行 relayout 等
+  // 依赖 _fullLayout 的操作，否则会触发 'ticklabelposition' undefined 错误。
+  return newPlotPromise;
+}
+
+// 虚拟滚动核心：从全量 _lastVisible 中取全局行号 [lo, hi) 窗口内的事件，构建甘特 traces。
+// 时间范围过滤：仅绘制与 currentRange 有重叠的事件（x 维度裁剪）；行号 y 始终用全局 idx（固定不变）。
+// customdata = 全局事件索引（hover/click 查看详情用）。单次只渲染窗口内 bar，百万级靠窗口裁剪。
+function buildGanttTraces(lo, hi) {
+  var groups = {}, opOrder = [];
+  var end = Math.min(hi, _lastVisible.length);
+  var r0 = currentRange[0], r1 = currentRange[1];
+  // 窗口内行数超过单次绘制上限时均匀抽样：每隔 step 行取 1 个绘制，bar 仍在其真实全局行号位置。
+  // 这样大窗口（如 Rows=50000）能展示整体分布趋势而不卡顿；小窗口（< MAX_DRAW_BARS）全量绘制看细节。
+  // 行号/总数基于全局 N，抽样只影响绘制密度，不影响行号空间与总数显示。
+  var windowSize = end - lo;
+  var step = windowSize > MAX_DRAW_BARS ? Math.ceil(windowSize / MAX_DRAW_BARS) : 1;
+  for (var k = lo; k < end; k += step) {
+    var idx = _lastVisible[k];
+    // 时间范围过滤：事件与当前时间窗口无重叠则跳过（行号位置保留为空，但全局行号不变）
+    if (_ganttEnds[idx] <= r0 || GANTT_STARTS[idx] > r1) continue;
+    var nm = OP_NAMES[GANTT_IDS[idx]];
+    if (!groups[nm]) { groups[nm] = []; opOrder.push(nm); }
+    groups[nm].push({ idx: idx, y: idx });
+  }
+  // 随缩放自适应的最小可视宽度：保证短时长/零时长 bar 在缩放后仍肉眼可见。
+  var span = currentRange[1] - currentRange[0];
+  var minDur = Math.max(span * 0.008, 0.01);
+  var ganttTraces = [];
+  for (var r = 0; r < opOrder.length; r++) {
+    var nm = opOrder[r], cl = COLOR_MAP[nm] || '#999';
+    var entries = groups[nm];
+    var n = entries.length;
+    var xs = new Array(n), ys = new Array(n), bases = new Array(n), cds = new Array(n), hts = new Array(n);
+    for (var k = 0; k < n; k++) {
+      var e = entries[k], idx = e.idx, yp = e.y, sz = GANTT_SIZES[idx];
+      var realDur = GANTT_DURS[idx];
+      xs[k] = Math.max(realDur, minDur);
+      ys[k] = yp;
+      bases[k] = GANTT_STARTS[idx];
+      cds[k] = idx;
+      hts[k] = '<b>' + nm + '</b><br>Size: ' + (sz/1024).toFixed(3) + ' MB (' + sz.toFixed(1) + ' KB)<br>Start: '
+        + (GANTT_STARTS[idx]+T_OFFSET).toFixed(3) + ' ms<br>Duration: ' + realDur.toFixed(3) + ' ms';
+    }
+    ganttTraces.push({ x: xs, y: ys, base: bases,
+      type: 'bar', orientation: 'h', name: nm, customdata: cds,
+      xaxis: 'x2', yaxis: 'y2', width: Math.max(0.95, step * 0.9),
+      marker: { color: cl, line: { color: 'rgba(255,255,255,0)', width: 2 } },
+      hovertext: hts, hoverinfo: 'text',
+      hoverlabel: { bgcolor: '#fff', bordercolor: cl, font: { size: 11 } }, showlegend: false });
+  }
+  return ganttTraces;
+}
+
+function showBarDetail(i) {
+  var panel=document.getElementById('detail-panel'), c=document.getElementById('detail-content');
+  var nm = OP_NAMES[GANTT_IDS[i]];
+  var csIdx = (typeof CS_IDX !== 'undefined') ? CS_IDX[i] : -1;
+  var cs = (csIdx !== undefined && csIdx >= 0 && typeof CS_POOL !== 'undefined')
+    ? CS_POOL[csIdx] : '';
+  var csHtml = cs
+    ? '<span class="label">Call Stack:</span><div class="call-stack-box">'+escHtml(cs)+'</div>'
+    : '<span class="label">Call Stack:</span><span class="value" style="color:#999">(empty)</span>';
+  c.innerHTML='<span class="label">Operator:</span><span class="value">'+escHtml(nm)+'</span>'
+    +'<span class="label">Size:</span><span class="value">'+(GANTT_SIZES[i]/1024).toFixed(3)+' MB ('+GANTT_SIZES[i].toFixed(1)+' KB)</span>'
+    +'<span class="label">Start Time:</span><span class="value">'+(GANTT_STARTS[i]+T_OFFSET).toFixed(3)+' ms</span>'
+    +'<span class="label">Duration:</span><span class="value">'+GANTT_DURS[i].toFixed(3)+' ms</span>'
+    +'<span class="label">End Time:</span><span class="value">'+(GANTT_STARTS[i]+GANTT_DURS[i]+T_OFFSET).toFixed(3)+' ms</span>'
+    +'<span class="label">Total Allocated:</span><span class="value">'+(TOTAL_ALLOC[i]||0).toFixed(2)+' MB</span>'
+    +csHtml;
+  panel.classList.add('active'); panel.scrollIntoView({ behavior:'smooth', block:'nearest' });
+}
+function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function syncInputsFromRange() {
+  leftInput.value=(currentRange[0]+T_OFFSET).toFixed(3); rightInput.value=(currentRange[1]+T_OFFSET).toFixed(3);
+  leftInput.classList.remove('invalid'); rightInput.classList.remove('invalid');
+}
+function onLeftChange() {
+  if (isSyncing) return; var v=parseFloat(leftInput.value)-T_OFFSET;
+  if (isNaN(v)||v<T_MIN||v>=currentRange[1]) { leftInput.classList.add('invalid'); return; }
+  leftInput.classList.remove('invalid'); currentRange[0]=v;
+  // 只需 relayout xaxis.range，xaxis2.matches='x' 会自动镜像同步，刻度由 nticks 自适应
+  isSyncing = true;
+  Plotly.relayout('chart', { 'xaxis.range': currentRange });
+  isSyncing = false; updateRangeInfo(); scheduleAfterRelayout();
+}
+
+function onRightChange() {
+  if (isSyncing) return; var v=parseFloat(rightInput.value)-T_OFFSET;
+  if (isNaN(v)||v>T_MAX||v<=currentRange[0]) { rightInput.classList.add('invalid'); return; }
+  rightInput.classList.remove('invalid'); currentRange[1]=v;
+  isSyncing = true;
+  Plotly.relayout('chart', { 'xaxis.range': currentRange });
+  isSyncing = false; updateRangeInfo(); scheduleAfterRelayout();
+}
+// ── 原生垂直滚动条（右侧）────────────────────────────────
+// 用 overflow-y:scroll 的 div + 内部占位元素撑出滚动高度，原生支持滚轮+拖拽 thumb。
+// 百万级行数下"每行固定像素"会使 inner 高度爆炸（2000万px，浏览器卡顿/超限），
+// 故采用比例映射：inner 占位高度 = SCROLL_TRACK_PX（固定上限），scrollTop ∈ [0, track]，
+// 按比例换算 ganttView.start = round(scrollTop/track × maxStart)。
+// track 远大于可视高 hPx，保证 thumb 仍可拖拽且粒度足够细。
+var ROW_PX = 20;                 // 仅用于程序设 scrollTop 时的初始定位估算
+var SCROLL_TRACK_PX = 200000;    // 固定滚动轨道像素（< 浏览器元素高度上限 33M，安全）
+
+// 由当前 scrollTop 反推 ganttView.start（比例映射）
+function scrollTopToStart() {
+  var rc = _lastRowCount;
+  var maxStart = Math.max(0, rc - ganttView.count);
+  if (maxStart <= 0) return 0;
+  var track = SCROLL_TRACK_PX;
+  var st = ganttScroll.scrollTop;
+  if (st > track) st = track;
+  return Math.round(st / track * maxStart);
+}
+// 由 ganttView.start 反推应设的 scrollTop（比例映射）
+function startToScrollTop(start) {
+  var rc = _lastRowCount;
+  var maxStart = Math.max(0, rc - ganttView.count);
+  if (maxStart <= 0) return 0;
+  return Math.round(start / maxStart * SCROLL_TRACK_PX);
+}
+
+// 按甘特图子图（yaxis2）的实际像素区域定位右侧滚动条容器，并设置 inner 占位高度。
+function positionGanttScroll() {
+  var gd = document.getElementById('chart');
+  var fl = gd._fullLayout;
+  var scroll = ganttScroll;
+  var lbl = document.getElementById('gantt-scroll-label');
+  var show = _lastRowCount > ganttView.count;
+  scroll.style.display = show ? 'block' : 'none';
+  if (lbl) lbl.style.display = show ? 'block' : 'none';
+  if (!show) return;
+  var topPx = 0, hPx = 620;
+  if (fl && fl.yaxis2) { topPx = fl.yaxis2._offset; hPx = fl.yaxis2._length; }
+  scroll.style.top = topPx + 'px';
+  scroll.style.height = hPx + 'px';
+  if (lbl) lbl.style.top = (topPx + hPx + 4) + 'px';
+  // inner 撑出固定滚动轨道（比例映射，避免百万级高度爆炸）
+  var inner = document.getElementById('gantt-scroll-inner');
+  if (inner) inner.style.height = (SCROLL_TRACK_PX + hPx) + 'px';
+}
+// 仅 relayout yaxis2 的 range 与行号刻度，不重建甘特数据。
+function relayoutGanttWindow() {
+  var rc = _lastRowCount;
+  var lo = ganttView.start, hi = ganttView.start + ganttView.count;
+  var yVals=[], yTexts=[];
+  var step = Math.max(1, Math.ceil(ganttView.count / 20));
+  for (var k = lo; k < hi; k += step) {
+    yVals.push(k);
+    yTexts.push(String(k + 1));   // 显示 1-based 行号
+  }
+  // 守卫：Plotly 的 newPlot/react 是异步的，若上一操作未完成则 _fullLayout.yaxis2 可能不存在，
+  // 此时 relayout yaxis2 会触发 'Cannot read properties of undefined (reading ticklabelposition)'。
+  // buildCharts 的 newPlot 已设置正确的 yaxis2 range/tickvals，故此处跳过 relayout 仅更新文本即可。
+  var gd = document.getElementById('chart');
+  if (gd && gd._fullLayout && gd._fullLayout.yaxis2) {
+    var prevSync = isSyncing;
+    isSyncing = true;
+    Plotly.relayout('chart', {
+      'yaxis2.range': [hi + 0.5, lo - 0.5],
+      'yaxis2.tickvals': yVals,
+      'yaxis2.ticktext': yTexts
+    });
+    isSyncing = prevSync;
+    _relayoutRetry = 0;
+  } else if (_relayoutRetry < 10) {
+    // _fullLayout.yaxis2 未就绪（newPlot/react 仍在进行）：下一帧重试，保证行号刻度始终刷新，
+    // 避免“缩放后左边没有数字”。重试上限 10 次防止死循环。
+    _relayoutRetry++;
+    requestAnimationFrame(relayoutGanttWindow);
+  }
+  ganttPos.textContent = (lo + 1) + '–' + hi + ' / ' + rc;
+  var lbl = document.getElementById('gantt-scroll-label');
+  if (lbl) lbl.textContent = (lo + 1) + '–' + hi + ' / ' + rc;
+}
+// 行窗口缩放（Rows 输入框变化或 buildCharts 后调用）：
+// 重算 count/start、定位滚动条容器、程序设 scrollTop。
+// skipReact=true 时跳过 Plotly.react（buildCharts 已 newPlot 渲染初始窗口，无需重建）；
+// skipReact=false（Rows 变化等）时用 Plotly.react 重建甘特 traces（虚拟滚动换窗口内容）。
+// 滚动条 scroll 事件不走此函数，只用 relayoutGanttWindow 改 y 轴，故滚动流畅不重建。
+function applyGanttView(skipReact) {
+  var rc = _lastRowCount;
+  if (rc <= 0) return;
+  // count 不设绘制上限——大窗口（看整体）由 buildGanttTraces 内均匀抽样到 MAX_DRAW_BARS 控制绘制量。
+  ganttView.count = Math.max(5, Math.min(rc, parseInt(ganttRowsInput.value) || 100));
+  var maxStart = Math.max(0, rc - ganttView.count);
+  if (ganttView.start > maxStart) ganttView.start = maxStart;
+  if (ganttView.start < 0) ganttView.start = 0;
+  positionGanttScroll();
+  // 程序设 scrollTop 不会触发 scroll 事件，无递归风险（比例映射）
+  ganttScroll.scrollTop = startToScrollTop(ganttView.start);
+  if (!skipReact) {
+    var gd = document.getElementById('chart');
+    if (gd.data && gd.data.length) {
+      var lo = ganttView.start, hi = ganttView.start + ganttView.count;
+      var newGantt = buildGanttTraces(lo, hi);
+      var prevSync = isSyncing;
+      isSyncing = true;
+      // 保留 lineTrace（gd.data[0]），替换甘特 traces；layout/config 沿用当前。
+      // Plotly.react 是异步的：relayout 必须在其 Promise resolve 后执行，
+      // 否则 _fullLayout.yaxis2 未就绪会触发 'ticklabelposition' undefined 错误。
+      Plotly.react('chart', [gd.data[0]].concat(newGantt), gd.layout, gd.config).then(function() {
+        isSyncing = prevSync;
+        relayoutGanttWindow();
+      });
+      return;  // relayout 已在 then 中执行，避免重复调用
+    }
+  }
+  relayoutGanttWindow();
+}
+function updateRangeInfo() {
+  var cnt=0, ops={};
+  // 二分缩小右边界，只扫 [0, rightExcl)，与 buildCharts 同策略
+  var rightExcl = upperBound(GANTT_STARTS, currentRange[1]);
+  for (var i=0; i<rightExcl; i++) if (_ganttEnds[i]>currentRange[0]) {
+    cnt++; ops[OP_NAMES[GANTT_IDS[i]]]=1;
+  }
+  var nOps = Object.keys(ops).length;
+  rangeInfo.textContent='Events: '+cnt+' / '+TOTAL_OP_COUNT+'  |  Operators: '+nOps+'  |  Span: '+(currentRange[1]-currentRange[0]).toFixed(2)+' ms';
+}
+// 缩放/平移/输入框变更结束后，防抖重建甘特图：按当前 currentRange 重新收集全量可见 bar，
+// 存入 _lastVisible（虚拟滚动数据源），渲染只取当前窗口。300ms 防抖避免拖拽过程中频繁重建；
+// isSyncing 守护避免与 Plotly.relayout 循环。
+var _afterRelayoutTimer = null;
+// relayoutGanttWindow 在 _fullLayout.yaxis2 未就绪时的重试计数（上限防死循环）
+var _relayoutRetry = 0;
+function scheduleAfterRelayout() {
+  if (_afterRelayoutTimer) clearTimeout(_afterRelayoutTimer);
+  _afterRelayoutTimer = setTimeout(function() {
+    _afterRelayoutTimer = null;
+    if (isSyncing) return;
+    if (_ganttScrollTimer) { clearTimeout(_ganttScrollTimer); _ganttScrollTimer = null; }
+    updateRangeInfo();
+    // 时间范围变化后，将行窗口起点对齐到新范围内首个事件：事件按 start 升序，
+    // 用二分定位首个 start >= range[0] 的全局行号并少量回扫以容纳跨入范围的早开始事件。
+    // 不做这步会保留旧滚动位置，新时间范围内该行窗口可能无任何事件 → 甘特图为空、
+    // 行号与可见时间范围脱节（“序号不是全局的”“下面没有内容”的根因）。
+    alignGanttStartToRange();
+    // buildCharts 内 newPlot 异步：必须在其 Promise resolve 后再 applyGanttView，
+    // 否则 _fullLayout.yaxis2 未就绪，relayout 会触发 'ticklabelposition' undefined 错误。
+    buildCharts(currentRange).then(function() { applyGanttView(true); });
+  }, 300);
+}
+// 时间范围变化后将 ganttView.start 对齐到新范围内首个可见事件的全局行号。
+function alignGanttStartToRange() {
+  var n = GANTT_STARTS.length;
+  if (n <= 0) return;
+  var count = Math.max(5, Math.min(n, parseInt(ganttRowsInput.value) || 100));
+  ganttView.count = count;
+  // 事件按 start 升序：二分找首个 start >= currentRange[0]
+  var i0 = lowerBound(GANTT_STARTS, currentRange[0]);
+  // 少量回扫以容纳 start 早于 range[0] 但 end 跨入范围的事件（上限 64，避免 O(N) 退化）
+  var back = 0;
+  while (i0 > 0 && back < 64) {
+    if (_ganttEnds[i0 - 1] > currentRange[0]) { i0--; back++; } else break;
+  }
+  var maxStart = Math.max(0, n - count);
+  ganttView.start = Math.max(0, Math.min(maxStart, i0));
+}
+leftInput.addEventListener('change', onLeftChange); leftInput.addEventListener('keydown', function(e){if(e.key==='Enter')onLeftChange()});
+rightInput.addEventListener('change', onRightChange); rightInput.addEventListener('keydown', function(e){if(e.key==='Enter')onRightChange()});
+ganttRowsInput.addEventListener('change', function(){applyGanttView(false);}); ganttRowsInput.addEventListener('keydown', function(e){if(e.key==='Enter')applyGanttView(false)});
+// 原生滚动条：scroll 事件 → 由 scrollTop 反推 ganttView.start。
+// 虚拟滚动下窗口变化需重建 bar traces，但 scroll 高频触发，直接 react 会卡。
+// 策略：立即 relayout y 轴（移动行号刻度，流畅响应），防抖 80ms 后 Plotly.react 重建 bar。
+// scroll handler 内只读 scrollTop、不设 scrollTop，避免与浏览器滚动循环。
+// _ganttScrollTimer 防抖句柄；react 前 isSyncing guard 防止与其它 relayout 循环。
+var _ganttScrollTimer = null;
+ganttScroll.addEventListener('scroll', function() {
+  var rc = _lastRowCount;
+  if (rc <= 0) return;
+  var maxStart = Math.max(0, rc - ganttView.count);
+  if (maxStart <= 0) return;
+  var newStart = scrollTopToStart();
+  if (newStart > maxStart) newStart = maxStart;
+  if (newStart < 0) newStart = 0;
+  if (newStart === ganttView.start) return;
+  ganttView.start = newStart;
+  // 立即更新 y 轴行号刻度与 ganttPos（轻量，流畅）
+  relayoutGanttWindow();
+  // 防抖重建窗口内 bar（虚拟滚动核心）
+  if (_ganttScrollTimer) clearTimeout(_ganttScrollTimer);
+  _ganttScrollTimer = setTimeout(function() {
+    _ganttScrollTimer = null;
+    var gd = document.getElementById('chart');
+    if (!gd.data || !gd.data.length) return;
+    var lo = ganttView.start, hi = ganttView.start + ganttView.count;
+    var newGantt = buildGanttTraces(lo, hi);
+    var prevSync = isSyncing;
+    isSyncing = true;
+    Plotly.react('chart', [gd.data[0]].concat(newGantt), gd.layout, gd.config).then(function() {
+      isSyncing = prevSync;
+    });
+  }, 80);
+});
+leftInput.value=T_OFFSET.toFixed(3); rightInput.value=(T_MAX+T_OFFSET).toFixed(3);
+updateRangeInfo();
+// buildCharts 内 newPlot 异步：applyGanttView 依赖 _fullLayout.yaxis2，须在 Promise resolve 后执行。
+buildCharts(currentRange).then(function() { applyGanttView(true); });
+// Plotly 渲染与布局计算可能有微任务延迟，下一帧再次定位滚动条确保贴合
+requestAnimationFrame(function(){ positionGanttScroll(); });
+// 窗口尺寸变化时重新定位滚动条（贴合甘特图新像素区域）
+window.addEventListener('resize', positionGanttScroll);
+</script>
+</body>
+</html>

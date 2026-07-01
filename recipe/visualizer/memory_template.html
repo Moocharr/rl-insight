@@ -28,11 +28,30 @@ h1 { text-align: center; margin-bottom: 10px; font-size: 20px; }
 .detail-grid .label { font-weight: 600; color: #666; text-align: right; }
 .detail-grid .value { color: #333; word-break: break-all; font-family: 'Consolas', monospace; }
 .call-stack-box { grid-column: 2; background: #f8f8f8; border: 1px solid #e0e0e0; border-radius: 4px; padding: 10px 14px; font-family: 'Consolas', monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; max-height: 350px; overflow-y: auto; color: #444; }
+.phase-panel { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 14px 18px; margin-bottom: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+.phase-panel h3 { font-size: 14px; margin-bottom: 10px; color: #555; }
+.phase-panel .note { font-size: 11px; color: #999; margin-left: 8px; font-weight: normal; }
+.phase-cards { display: flex; flex-wrap: wrap; gap: 12px; }
+.phase-card { flex: 1 1 280px; min-width: 260px; border: 1px solid #e0e0e0; border-left: 4px solid #4e79a7; border-radius: 6px; padding: 10px 14px; background: #fafafa; }
+.phase-card.training { border-left-color: #e15759; }
+.phase-card.inference { border-left-color: #59a14f; }
+.phase-card.unknown { border-left-color: #9c755f; }
+.phase-card .phase-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.phase-card .phase-name { font-weight: 700; font-size: 14px; color: #333; }
+.phase-card .phase-roles { font-size: 11px; color: #888; }
+.phase-card .stat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 12px; font-size: 12px; }
+.phase-card .stat-grid .k { color: #777; }
+.phase-card .stat-grid .v { color: #222; font-family: 'Consolas', monospace; text-align: right; }
+.phase-empty { font-size: 12px; color: #999; padding: 6px 0; }
 </style>
 </head>
 <body>
 <div class="container">
 <h1>Memory Allocation Timeline</h1>
+<div class="phase-panel" id="phase-panel">
+<h3>Memory by Phase (Inference / Training)<span class="note" id="phase-note">— per-phase memory statistics across all roles / ranks (G2)</span></h3>
+<div class="phase-cards" id="phase-cards"></div>
+</div>
 <div class="controls">
 <div class="control-group"><label for="range-left">Left:</label><input type="number" id="range-left" step="any" /><span class="unit">ms</span></div>
 <div class="control-group"><label for="range-right">Right:</label><input type="number" id="range-right" step="any" /><span class="unit">ms</span></div>
@@ -42,6 +61,61 @@ h1 { text-align: center; margin-bottom: 10px; font-size: 20px; }
 <div class="detail-panel" id="detail-panel"><h3>Operator Detail</h3><div class="detail-grid" id="detail-content"></div></div>
 </div>
 <script src="__DATA_FILE__"></script>
+<script>
+// ── Phase statistics panel (G2) ───────────────────────────────────────
+// PHASE_STATS is injected by detail_data.js as
+// { phase_name: { phase, roles, event_count, alloc_count, alloc_mb,
+//                 peak_allocated_mb, peak_active_mb, t_start_ms, t_end_ms, ... } }
+(function renderPhasePanel() {
+  var container = document.getElementById('phase-cards');
+  if (!container) return;
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function statRow(k, v) {
+    return '<span class="k">' + escapeHtml(k) + '</span><span class="v">' + escapeHtml(v) + '</span>';
+  }
+  function fmt(n, d) { n = Number(n) || 0; return n.toFixed(d == null ? 2 : d); }
+  if (typeof PHASE_STATS === 'undefined' || !PHASE_STATS) {
+    container.innerHTML = '<div class="phase-empty">No phase statistics available.</div>';
+    return;
+  }
+  var phaseOrder = ['Training', 'Inference', 'Unknown'];
+  var phases = Object.keys(PHASE_STATS);
+  phases.sort(function (a, b) {
+    var ia = phaseOrder.indexOf(a), ib = phaseOrder.indexOf(b);
+    if (ia < 0) ia = 99; if (ib < 0) ib = 99;
+    return ia - ib;
+  });
+  if (!phases.length) {
+    container.innerHTML = '<div class="phase-empty">No phase statistics available.</div>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < phases.length; i++) {
+    var s = PHASE_STATS[phases[i]] || {};
+    var name = s.phase || phases[i];
+    var cls = 'phase-card ' + String(name).toLowerCase();
+    var roles = (s.roles || []).join(', ') || '—';
+    var tSpan = fmt((Number(s.t_end_ms) || 0) - (Number(s.t_start_ms) || 0));
+    html += '<div class="' + cls + '">';
+    html += '<div class="phase-head"><span class="phase-name">' + escapeHtml(name) + '</span><span class="phase-roles">' + escapeHtml(roles) + '</span></div>';
+    html += '<div class="stat-grid">';
+    html += statRow('Events', s.event_count || 0);
+    html += statRow('Allocations', s.alloc_count || 0);
+    html += statRow('Deallocations', s.dealloc_count || 0);
+    html += statRow('Allocated (MB)', fmt(s.alloc_mb));
+    html += statRow('Peak Alloc (MB)', fmt(s.peak_allocated_mb));
+    html += statRow('Peak Active (MB)', fmt(s.peak_active_mb));
+    html += statRow('Time Span (ms)', tSpan);
+    html += '</div>';
+    html += '</div>';
+  }
+  container.innerHTML = html;
+})();
+</script>
 <script>
 var T_MIN = 0;
 var T_MAX = GANTT_STARTS[GANTT_STARTS.length-1] + GANTT_DURS[GANTT_DURS.length-1];
@@ -116,6 +190,9 @@ function makeTickInfo(t0, t1) {
 }
 
 function buildCharts(range) {
+  // 取消挂起的滚动重建定时器，避免其 Plotly.react 与下面的 purge/newPlot 竞争，
+  // 导致子图域错位/重叠或渲染中间态（缩放横轴后甘特图与折线图重叠、无内容的根因之一）。
+  if (_ganttScrollTimer) { clearTimeout(_ganttScrollTimer); _ganttScrollTimer = null; }
   Plotly.purge('chart');
 
   // ── 甘特数据准备（行号=全局固定索引，时间范围仅过滤绘制）────────
@@ -409,6 +486,12 @@ function relayoutGanttWindow() {
       'yaxis2.ticktext': yTexts
     });
     isSyncing = prevSync;
+    _relayoutRetry = 0;
+  } else if (_relayoutRetry < 10) {
+    // _fullLayout.yaxis2 未就绪（newPlot/react 仍在进行）：下一帧重试，保证行号刻度始终刷新，
+    // 避免“缩放后左边没有数字”。重试上限 10 次防止死循环。
+    _relayoutRetry++;
+    requestAnimationFrame(relayoutGanttWindow);
   }
   ganttPos.textContent = (lo + 1) + '–' + hi + ' / ' + rc;
   var lbl = document.getElementById('gantt-scroll-label');
@@ -463,16 +546,40 @@ function updateRangeInfo() {
 // 存入 _lastVisible（虚拟滚动数据源），渲染只取当前窗口。300ms 防抖避免拖拽过程中频繁重建；
 // isSyncing 守护避免与 Plotly.relayout 循环。
 var _afterRelayoutTimer = null;
+// relayoutGanttWindow 在 _fullLayout.yaxis2 未就绪时的重试计数（上限防死循环）
+var _relayoutRetry = 0;
 function scheduleAfterRelayout() {
   if (_afterRelayoutTimer) clearTimeout(_afterRelayoutTimer);
   _afterRelayoutTimer = setTimeout(function() {
     _afterRelayoutTimer = null;
     if (isSyncing) return;
+    if (_ganttScrollTimer) { clearTimeout(_ganttScrollTimer); _ganttScrollTimer = null; }
     updateRangeInfo();
+    // 时间范围变化后，将行窗口起点对齐到新范围内首个事件：事件按 start 升序，
+    // 用二分定位首个 start >= range[0] 的全局行号并少量回扫以容纳跨入范围的早开始事件。
+    // 不做这步会保留旧滚动位置，新时间范围内该行窗口可能无任何事件 → 甘特图为空、
+    // 行号与可见时间范围脱节（“序号不是全局的”“下面没有内容”的根因）。
+    alignGanttStartToRange();
     // buildCharts 内 newPlot 异步：必须在其 Promise resolve 后再 applyGanttView，
     // 否则 _fullLayout.yaxis2 未就绪，relayout 会触发 'ticklabelposition' undefined 错误。
     buildCharts(currentRange).then(function() { applyGanttView(true); });
   }, 300);
+}
+// 时间范围变化后将 ganttView.start 对齐到新范围内首个可见事件的全局行号。
+function alignGanttStartToRange() {
+  var n = GANTT_STARTS.length;
+  if (n <= 0) return;
+  var count = Math.max(5, Math.min(n, parseInt(ganttRowsInput.value) || 100));
+  ganttView.count = count;
+  // 事件按 start 升序：二分找首个 start >= currentRange[0]
+  var i0 = lowerBound(GANTT_STARTS, currentRange[0]);
+  // 少量回扫以容纳 start 早于 range[0] 但 end 跨入范围的事件（上限 64，避免 O(N) 退化）
+  var back = 0;
+  while (i0 > 0 && back < 64) {
+    if (_ganttEnds[i0 - 1] > currentRange[0]) { i0--; back++; } else break;
+  }
+  var maxStart = Math.max(0, n - count);
+  ganttView.start = Math.max(0, Math.min(maxStart, i0));
 }
 leftInput.addEventListener('change', onLeftChange); leftInput.addEventListener('keydown', function(e){if(e.key==='Enter')onLeftChange()});
 rightInput.addEventListener('change', onRightChange); rightInput.addEventListener('keydown', function(e){if(e.key==='Enter')onRightChange()});

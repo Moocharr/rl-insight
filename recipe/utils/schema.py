@@ -79,18 +79,25 @@ class MemoryEventRow(TypedDict):
         name: Operator name from ``operator_memory.csv`` (e.g. ``aten::empty``).
             Covers all operator types, not only ``cpu_op``.
         role: RL role name (e.g. ``actor_update``).
+        phase: RL execution phase inferred from ``role`` — one of
+            ``"Inference"``, ``"Training"``, ``"Unknown"``.  See
+            :class:`recipe.utils.phase_classifier.MemoryPhaseClassifier`
+            for the classification rule.  Enables per-phase memory
+            statistics (G2: classify memory by phase).
         rank_id: Rank identifier.
         call_stack: Full Python call stack from ``trace_view.json``
             (frames separated by ``";\\r\\n"``).  Empty string when no
-            matching ``cpu_op`` event is found.
+            matching ``cpu_op`` event is found.  (G3: allocation stack
+            traceability.)
         call_stack_top: First line of the call stack — the user-code entry
             point.  Empty string when ``call_stack`` is empty.
         size_kb: Memory size in KB.  Positive = allocation, negative =
-            deallocation.
+            deallocation.  (G3: allocation size traceability.)
         start_time_ms: Timestamp of the allocation / deallocation in
             milliseconds.  Named ``start_time_ms`` to align with the
             ``start_time_ms`` key expected by
-            :class:`BaseClusterParser.reducer_func`.
+            :class:`BaseClusterParser.reducer_func`.  (G3: allocation time
+            traceability.)
         duration_ms: How long the memory block stayed allocated (ms).
             ``0.0`` when the memory has not been released yet.
         total_allocated_mb: Cumulative allocated memory (MB) at allocation
@@ -103,6 +110,7 @@ class MemoryEventRow(TypedDict):
 
     name: str
     role: str
+    phase: str
     rank_id: int
     call_stack: str
     call_stack_top: str

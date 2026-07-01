@@ -23,6 +23,7 @@ from omegaconf import DictConfig
 
 from recipe.config.utils import get_config_value
 from recipe.data import DataEnum
+from recipe.utils.phase_classifier import MemoryPhaseClassifier
 
 from .visualizer import (
     BaseVisualizer,
@@ -37,6 +38,10 @@ class MemoryVisualizer(BaseVisualizer):
     Displays memory allocations over time for each (role, rank), color-coded
     by operator name.  Includes hover details for memory size and cumulative
     memory statistics (allocated / reserved / active).
+
+    A **phase statistics** panel summarises memory by RL execution phase
+    (Inference / Training) — implementing G2 (classify and statistics memory
+    by phase) at the visualization layer.
     """
 
     input_type: DataEnum = DataEnum.MEMORY_SUMMARY
@@ -49,6 +54,7 @@ class MemoryVisualizer(BaseVisualizer):
     def __init__(self, config: Union[DictConfig, dict]):
         super().__init__(config)
         self.output_path = get_config_value(config, "output.path", None)
+        self._phase_classifier = MemoryPhaseClassifier()
 
     def run(self, data):
         return self.generate_memory_timeline(data)
@@ -70,8 +76,9 @@ class MemoryVisualizer(BaseVisualizer):
             data: Preprocessed DataFrame with columns: name, size_kb,
                   start_time_ms, duration_ms, total_allocated_mb,
                   total_reserved_mb, total_active_mb, device_type,
-                  call_stack_top, role, rank_id.  Only positive allocations
-                  (size_kb > 0).
+                  call_stack_top, role, rank_id, phase.  Both allocations
+                  (``size_kb > 0``) and deallocations (``size_kb < 0``) are
+                  accepted; the Gantt chart renders allocations only.
         """
         logger.info(
             f"Starting memory timeline generation: "
@@ -81,6 +88,15 @@ class MemoryVisualizer(BaseVisualizer):
         if data is None or data.empty:
             logger.info("No memory allocations found — nothing to visualize.")
             return None
+
+        # Compute global phase statistics (G2) BEFORE filtering to
+        # allocations-only, so the summary covers both allocations and
+        # deallocations across all phases / roles / ranks.
+        phase_stats = self._phase_classifier.compute_statistics(data)
+        logger.info(
+            f"Phase statistics computed for {len(phase_stats)} phase(s): "
+            + ", ".join(sorted(phase_stats.keys()))
+        )
 
         # Filter to only positive allocations (skip releases)
         data = data[data["size_kb"] > 0]
@@ -109,13 +125,17 @@ class MemoryVisualizer(BaseVisualizer):
                 role, rank_id = None, None
                 logger.info(f"Generating memory timeline ({len(group_data)} events)")
 
-            result = self._generate_single_timeline(group_data, role, rank_id)
+            result = self._generate_single_timeline(
+                group_data, role, rank_id, phase_stats
+            )
             if first_output is None and result is not None:
                 first_output = result
 
         return first_output
 
-    def _generate_single_timeline(self, data: pd.DataFrame, role, rank_id):
+    def _generate_single_timeline(
+        self, data: pd.DataFrame, role, rank_id, phase_stats=None
+    ):
         """Generate memory timeline HTML for a single (role, rank_id) group."""
         data = data.copy()
 
@@ -274,6 +294,7 @@ class MemoryVisualizer(BaseVisualizer):
             op_color_map=op_color_map,
             total_bar_count=total_bar_count,
             rank_prefix=rank_prefix,
+            phase_stats=phase_stats,
         )
 
         if rank_prefix:
@@ -383,11 +404,15 @@ class MemoryVisualizer(BaseVisualizer):
         op_color_map,
         total_bar_count,
         rank_prefix=None,
+        phase_stats=None,
     ):
         """Build a single HTML + detail_data.js containing all events.
 
         Chart1 (tl_xy, tl_active) is the full memory timeline.
         Chart2 arrays contain every allocation event.
+
+        ``phase_stats`` (G2) is injected as ``PHASE_STATS`` so the template can
+        render a per-phase (Inference / Training) memory summary panel.
         """
         compact_opts = {"separators": (",", ":"), "ensure_ascii": False}
         to_json = json.dumps
@@ -407,6 +432,7 @@ class MemoryVisualizer(BaseVisualizer):
             "var TL_ACTIVE = " + to_json(tl_active, **compact_opts) + ";",
             "var CS_POOL = " + to_json(call_stack_pool, **compact_opts) + ";",
             "var CS_IDX = " + to_json(call_stack_idx_arr, **compact_opts) + ";",
+            "var PHASE_STATS = " + to_json(phase_stats or {}, **compact_opts) + ";",
         ]
         detail_js = "\n".join(detail_lines)
 

@@ -18,6 +18,12 @@ import pytest
 
 from recipe.parser import MemoryClusterParser, get_cluster_parser_cls
 from recipe.parser.parser import CLUSTER_PARSER_REGISTRY
+from recipe.utils.phase_classifier import (
+    MemoryPhaseClassifier,
+    PHASE_INFERENCE,
+    PHASE_TRAINING,
+    PHASE_UNKNOWN,
+)
 from recipe.utils.schema import Constant
 
 
@@ -880,3 +886,296 @@ class TestMemoryParserEndToEnd:
 
         data_maps = parser.allocate_prof_data(str(tmp_path))
         assert len(data_maps) == 0
+
+
+# =============================================================================
+# Phase Classification Tests (G2)
+# =============================================================================
+
+
+class TestPhaseClassifier:
+    """Tests for :class:`recipe.utils.phase_classifier.MemoryPhaseClassifier`."""
+
+    def setup_method(self):
+        self.clf = MemoryPhaseClassifier()
+
+    @pytest.mark.parametrize(
+        "role,expected",
+        [
+            ("actor_update", PHASE_TRAINING),
+            ("critic_update", PHASE_TRAINING),
+            ("actor_train", PHASE_TRAINING),
+            ("backward_pass", PHASE_TRAINING),
+            ("optimizer_step", PHASE_TRAINING),
+            ("optim_step", PHASE_TRAINING),
+            ("grad_compute", PHASE_TRAINING),
+            ("rollout_generate", PHASE_INFERENCE),
+            ("actor_compute_log_prob", PHASE_INFERENCE),
+            ("ref_compute_log_prob", PHASE_INFERENCE),
+            ("reference_model", PHASE_INFERENCE),
+            ("forward_pass", PHASE_INFERENCE),
+            ("sample_decode", PHASE_INFERENCE),
+            ("infer_only", PHASE_INFERENCE),
+        ],
+    )
+    def test_classify_known_roles(self, role, expected):
+        assert self.clf.classify(role) == expected
+
+    def test_classify_training_takes_precedence(self):
+        # A role that matches both an inference keyword (generate) and a
+        # training keyword (update) should be classified as Training.
+        assert self.clf.classify("actor_update_generate") == PHASE_TRAINING
+
+    def test_classify_empty_role(self):
+        assert self.clf.classify("") == PHASE_UNKNOWN
+        assert self.clf.classify(None) == PHASE_UNKNOWN
+
+    def test_classify_unknown_role(self):
+        assert self.clf.classify("some_random_role") == PHASE_UNKNOWN
+
+    def test_classify_case_insensitive(self):
+        assert self.clf.classify("ACTOR_UPDATE") == PHASE_TRAINING
+        assert self.clf.classify("Rollout_Generate") == PHASE_INFERENCE
+
+    def test_classify_custom_keywords(self):
+        clf = MemoryPhaseClassifier(
+            training_keywords=("foo",),
+            inference_keywords=("bar",),
+        )
+        assert clf.classify("my_foo_role") == PHASE_TRAINING
+        assert clf.classify("my_bar_role") == PHASE_INFERENCE
+        # Default keywords no longer apply
+        assert clf.classify("actor_update") == PHASE_UNKNOWN
+
+
+class TestComputeStatistics:
+    """Tests for :meth:`MemoryPhaseClassifier.compute_statistics`."""
+
+    def setup_method(self):
+        self.clf = MemoryPhaseClassifier()
+
+    def _make_df(self, rows):
+        import pandas as pd
+
+        return pd.DataFrame(rows)
+
+    def test_empty_dataframe_returns_empty_dict(self):
+        import pandas as pd
+
+        assert self.clf.compute_statistics(pd.DataFrame()) == {}
+
+    def test_none_returns_empty_dict(self):
+        assert self.clf.compute_statistics(None) == {}
+
+    def test_stats_for_single_phase(self):
+        df = self._make_df(
+            [
+                {
+                    "role": "actor_update",
+                    "size_kb": 1024.0,
+                    "start_time_ms": 100.0,
+                    "duration_ms": 50.0,
+                    "total_allocated_mb": 10.0,
+                    "total_active_mb": 5.0,
+                },
+                {
+                    "role": "actor_update",
+                    "size_kb": -512.0,
+                    "start_time_ms": 200.0,
+                    "duration_ms": 10.0,
+                    "total_allocated_mb": 8.0,
+                    "total_active_mb": 4.0,
+                },
+            ]
+        )
+        clf = MemoryPhaseClassifier()
+        stats = clf.compute_statistics(df)
+
+        assert list(stats.keys()) == ["Training"]
+        s = stats["Training"]
+        assert s["phase"] == "Training"
+        assert s["roles"] == ["actor_update"]
+        assert s["event_count"] == 2
+        assert s["alloc_count"] == 1
+        assert s["dealloc_count"] == 1
+        assert s["alloc_kb"] == pytest.approx(1024.0)
+        assert s["dealloc_kb"] == pytest.approx(512.0)
+        assert s["net_kb"] == pytest.approx(512.0)
+        assert s["alloc_mb"] == pytest.approx(1.0)
+        assert s["peak_allocated_mb"] == pytest.approx(10.0)
+        assert s["peak_active_mb"] == pytest.approx(5.0)
+        assert s["t_start_ms"] == pytest.approx(100.0)
+        assert s["t_end_ms"] == pytest.approx(210.0)
+
+    def test_stats_for_multiple_phases(self):
+        df = self._make_df(
+            [
+                {
+                    "role": "actor_update",
+                    "size_kb": 2048.0,
+                    "start_time_ms": 100.0,
+                    "duration_ms": 50.0,
+                    "total_allocated_mb": 20.0,
+                    "total_active_mb": 10.0,
+                },
+                {
+                    "role": "rollout_generate",
+                    "size_kb": 1024.0,
+                    "start_time_ms": 300.0,
+                    "duration_ms": 30.0,
+                    "total_allocated_mb": 15.0,
+                    "total_active_mb": 7.0,
+                },
+                {
+                    "role": "rollout_generate",
+                    "size_kb": -1024.0,
+                    "start_time_ms": 400.0,
+                    "duration_ms": 5.0,
+                    "total_allocated_mb": 12.0,
+                    "total_active_mb": 6.0,
+                },
+            ]
+        )
+        clf = MemoryPhaseClassifier()
+        stats = clf.compute_statistics(df)
+
+        assert set(stats.keys()) == {"Training", "Inference"}
+        assert stats["Training"]["event_count"] == 1
+        assert stats["Training"]["alloc_mb"] == pytest.approx(2.0)
+        assert stats["Inference"]["event_count"] == 2
+        assert stats["Inference"]["alloc_count"] == 1
+        assert stats["Inference"]["dealloc_count"] == 1
+        assert stats["Inference"]["roles"] == ["rollout_generate"]
+
+    def test_stats_uses_existing_phase_column(self):
+        df = self._make_df(
+            [
+                {
+                    "role": "actor_update",
+                    "phase": "Inference",  # explicit override
+                    "size_kb": 1024.0,
+                    "start_time_ms": 100.0,
+                    "duration_ms": 50.0,
+                    "total_allocated_mb": 10.0,
+                    "total_active_mb": 5.0,
+                },
+            ]
+        )
+        clf = MemoryPhaseClassifier()
+        stats = clf.compute_statistics(df)
+        # Should respect the pre-existing phase column, not re-classify.
+        assert list(stats.keys()) == ["Inference"]
+        assert stats["Inference"]["roles"] == ["actor_update"]
+
+
+class TestParserPhaseIntegration:
+    """Integration: the parser populates ``phase`` and exposes stats (G2)."""
+
+    def test_phase_field_populated_in_results(self, tmp_path):
+        _create_ascend_profile_dir(
+            tmp_path,
+            role="actor_update",
+            rank_id=0,
+            trace_events=SAMPLE_TRACE_EVENTS,
+            memory_rows=SAMPLE_MEMORY_ROWS,
+        )
+
+        parser = MemoryClusterParser(
+            {Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"}
+        )
+        # ``run`` drives allocate → map → reduce, populating ``events_summary``.
+        # Single rank ⇒ serial processing (no ProcessPoolExecutor).
+        df = parser.run(str(tmp_path))
+
+        assert df is not None and len(df) > 0
+        assert "phase" in df.columns
+        assert (df["phase"] == "Training").all()
+
+    def test_phase_inference_for_rollout(self, tmp_path):
+        _create_ascend_profile_dir(
+            tmp_path,
+            role="rollout_generate",
+            rank_id=0,
+            trace_events=SAMPLE_TRACE_EVENTS,
+            memory_rows=SAMPLE_MEMORY_ROWS,
+        )
+
+        parser = MemoryClusterParser(
+            {Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"}
+        )
+        df = parser.run(str(tmp_path))
+
+        assert df is not None and len(df) > 0
+        assert "phase" in df.columns
+        assert (df["phase"] == "Inference").all()
+
+    def test_compute_phase_statistics_returns_training(self, tmp_path):
+        _create_ascend_profile_dir(
+            tmp_path,
+            role="actor_update",
+            rank_id=0,
+            trace_events=SAMPLE_TRACE_EVENTS,
+            memory_rows=SAMPLE_MEMORY_ROWS,
+        )
+
+        parser = MemoryClusterParser(
+            {Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"}
+        )
+        parser.run(str(tmp_path))
+
+        stats = parser.compute_phase_statistics()
+        assert "Training" in stats
+        assert stats["Training"]["roles"] == ["actor_update"]
+        assert stats["Training"]["event_count"] == len(parser.events_summary)
+
+    def test_compute_phase_statistics_no_events_returns_empty(self):
+        parser = MemoryClusterParser(
+            {Constant.INPUT_PATH: "/tmp", Constant.RANK_LIST: "all"}
+        )
+        assert parser.compute_phase_statistics() == {}
+
+    def test_compute_phase_statistics_multiple_phases(self, tmp_path):
+        # Parse two roles directly (avoids ProcessPoolExecutor in tests) and
+        # assemble ``events_summary`` to verify multi-phase statistics.
+        import pandas as pd
+
+        _create_ascend_profile_dir(
+            tmp_path,
+            role="actor_update",
+            rank_id=0,
+            trace_events=SAMPLE_TRACE_EVENTS,
+            memory_rows=SAMPLE_MEMORY_ROWS,
+        )
+        _create_ascend_profile_dir(
+            tmp_path,
+            role="rollout_generate",
+            rank_id=1,
+            trace_events=SAMPLE_TRACE_EVENTS,
+            memory_rows=SAMPLE_MEMORY_ROWS,
+        )
+
+        parser = MemoryClusterParser(
+            {Constant.INPUT_PATH: str(tmp_path), Constant.RANK_LIST: "all"}
+        )
+        out_actor = (
+            tmp_path
+            / "actor_update"
+            / "20250101_120000_ascend_pt"
+            / "ASCEND_PROFILER_OUTPUT"
+        )
+        out_rollout = (
+            tmp_path
+            / "rollout_generate"
+            / "20250101_120000_ascend_pt"
+            / "ASCEND_PROFILER_OUTPUT"
+        )
+
+        events = []
+        events += parser.parse_analysis_data(str(out_actor), 0, "actor_update")
+        events += parser.parse_analysis_data(str(out_rollout), 1, "rollout_generate")
+        parser.events_summary = pd.DataFrame(events)
+
+        stats = parser.compute_phase_statistics()
+        assert set(stats.keys()) == {"Training", "Inference"}
+        assert stats["Training"]["roles"] == ["actor_update"]
+        assert stats["Inference"]["roles"] == ["rollout_generate"]

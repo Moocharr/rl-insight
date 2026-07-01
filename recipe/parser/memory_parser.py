@@ -20,12 +20,14 @@ from loguru import logger
 import os
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Optional, Union
 
 from omegaconf import DictConfig
+import pandas as pd
 
 from .parser import BaseClusterParser, register_cluster_parser
 from recipe.utils.schema import Constant, DataMap
+from recipe.utils.phase_classifier import MemoryPhaseClassifier
 from recipe.data import DataEnum
 
 
@@ -36,10 +38,17 @@ class MemoryClusterParser(BaseClusterParser):
     Parses ``operator_memory.csv`` and ``trace_view.json`` from Ascend Profiler
     output to produce per-rank memory event records (``MemoryEventRow``).
 
-    Since no built-in visualizer exists for memory data yet, the primary
-    consumption path is the ``pd.DataFrame`` returned by ``run()``.  Callers
-    should inspect the DataFrame columns directly or export to CSV / JSON for
-    external analysis.
+    Each record is enriched with:
+
+    - ``phase`` — RL execution phase (``Inference`` / ``Training``) inferred
+      from ``role`` (G2: classify memory by phase).  See
+      :class:`recipe.utils.phase_classifier.MemoryPhaseClassifier`.
+    - ``call_stack`` / ``call_stack_top`` — Python allocation stack recovered
+      from ``trace_view.json`` (G3: allocation stack / size / time
+      traceability).
+
+    Use :meth:`compute_phase_statistics` to obtain a per-phase memory summary
+    (event counts, allocated MB, peak memory) from the parsed DataFrame.
 
     Output DataFrame columns (one row per memory allocation / deallocation):
 
@@ -54,6 +63,11 @@ class MemoryClusterParser(BaseClusterParser):
     role            str    RL role inferred from directory structure or
                           ``profiler_metadata.json`` (e.g.
                           ``actor_update``, ``actor_compute_log_prob``).
+    phase           str    RL execution phase derived from ``role`` —
+                          one of ``"Inference"``, ``"Training"``,
+                          ``"Unknown"``.  Enables per-phase memory
+                          statistics (G2).  See
+                          :class:`recipe.utils.phase_classifier.MemoryPhaseClassifier`.
     rank_id         int    Rank identifier extracted from
                           ``profiler_info_<rank_id>.json``.
     call_stack      str    Full Python call stack associated with the
@@ -128,6 +142,7 @@ class MemoryClusterParser(BaseClusterParser):
 
     def __init__(self, params: Union[DictConfig, dict]) -> None:
         super().__init__(params)
+        self._phase_classifier = MemoryPhaseClassifier()
 
     def parse_analysis_data(
         self, profiler_data_path: str, rank_id: int, role: str
@@ -276,6 +291,10 @@ class MemoryClusterParser(BaseClusterParser):
         results: list[dict[str, Any]] = []
         us_to_ms = Constant.US_TO_MS
 
+        # Phase is derived from role and is constant for the entire CSV
+        # (one role per profiler directory).  Compute once outside the loop.
+        phase = self._phase_classifier.classify(role)
+
         with open(csv_path, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
@@ -303,6 +322,7 @@ class MemoryClusterParser(BaseClusterParser):
                     {
                         "name": row["Name"].strip(),
                         "role": role,
+                        "phase": phase,
                         "rank_id": rank_id,
                         "call_stack": call_stack,
                         "call_stack_top": call_stack_top,
@@ -323,6 +343,36 @@ class MemoryClusterParser(BaseClusterParser):
                 )
 
         return results
+
+    def compute_phase_statistics(self, df: Optional[pd.DataFrame] = None) -> dict:
+        """Compute per-phase (Inference / Training) memory statistics.
+
+        Wraps :meth:`recipe.utils.phase_classifier.MemoryPhaseClassifier.compute_statistics`
+        over the parser's output DataFrame (``self.events_summary`` or a
+        caller-supplied DataFrame).  Implements G2 (classify and statistics
+        memory by phase).
+
+        Args:
+            df: Optional DataFrame to compute statistics from.  When omitted,
+                uses ``self.events_summary`` (the result of :meth:`run`).
+
+        Returns:
+            dict mapping phase name (``"Training"`` / ``"Inference"`` /
+            ``"Unknown"``) → stats dict.  Each stats dict contains
+            ``event_count``, ``alloc_count``, ``alloc_mb``,
+            ``peak_allocated_mb``, ``peak_active_mb``, ``roles``, time span,
+            etc.  See
+            :meth:`MemoryPhaseClassifier.compute_statistics` for the full
+            field list.
+        """
+        target = df if df is not None else self.events_summary
+        if target is None or (hasattr(target, "empty") and target.empty):
+            logger.warning(
+                "compute_phase_statistics: no events_summary available; "
+                "run the parser first."
+            )
+            return {}
+        return self._phase_classifier.compute_statistics(target)
 
     def _match_call_stack(
         self,

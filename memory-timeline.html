@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>内存时间线分析</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d1117;
+    color: #c9d1d9;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    padding: 24px;
+  }
+  h1 { text-align: center; font-size: 22px; font-weight: 600; color: #e6edf3; margin-bottom: 6px; }
+  .subtitle { text-align: center; font-size: 13px; color: #8b949e; margin-bottom: 8px; }
+  .stats { text-align: center; font-size: 12px; color: #58a6ff; margin-bottom: 16px; }
+  .chart-wrap {
+    width: 100%; max-width: 1400px; margin: 0 auto;
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 12px; position: relative;
+  }
+  #chart { height: 960px; }
+  #loading {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: #8b949e; font-size: 14px; z-index: 10;
+  }
+  .color-legend {
+    max-width: 1400px; margin: 12px auto 0 auto;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    font-size: 12px; color: #8b949e;
+  }
+  .color-bar {
+    width: 200px; height: 12px; border-radius: 3px;
+    background: linear-gradient(to right, #4A90D9, #E6A23C, #D94A4A);
+  }
+  .detail-panel {
+    max-width: 1400px; margin: 12px auto 0 auto;
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 12px 16px; font-size: 13px; min-height: 40px;
+    display: none;
+  }
+  .detail-panel.visible { display: block; }
+  .detail-panel .label { color: #8b949e; margin-right: 6px; }
+  .detail-panel .value { color: #e6edf3; font-weight: 600; }
+  .detail-panel .row { display: inline-block; margin-right: 24px; margin-bottom: 4px; }
+  .detail-title { color: #58a6ff; font-weight: 600; margin-bottom: 6px; }
+  .size-control {
+    max-width: 1400px; margin: 12px auto 0 auto;
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px; background: #161b22; border: 1px solid #30363d;
+    border-radius: 8px; font-size: 13px; color: #8b949e;
+  }
+  .size-control label { white-space: nowrap; }
+  .size-control input[type=range] { flex: 1; accent-color: #58a6ff; }
+  .size-control input[type=number] {
+    width: 80px; background: #0d1117; border: 1px solid #30363d;
+    border-radius: 4px; color: #e6edf3; padding: 4px 8px; font-size: 13px;
+    text-align: right; -moz-appearance: textfield;
+  }
+  .size-control input[type=number]::-webkit-inner-spin-button,
+  .size-control input[type=number]::-webkit-outer-spin-button {
+    -webkit-appearance: none; margin: 0;
+  }
+  .size-control input[type=number] { -moz-appearance: textfield; }
+  .size-btn {
+    background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+    border-radius: 4px; width: 28px; height: 28px; font-size: 16px;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+    line-height: 1; user-select: none;
+  }
+  .size-btn:hover { background: #30363d; }
+  .size-btn:active { background: #484f58; }
+  .size-control input[type=number]:focus { border-color: #58a6ff; outline: none; }
+  .size-control .range-label { color: #58a6ff; min-width: 160px; text-align: right; white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<h1>内存分配时间线分析</h1>
+<p class="subtitle">共用时间轴 | 上方：内存使用趋势 | 下方：分配块生命周期（滚轮纵向滚动 | 点击查看详情）</p>
+<p class="stats" id="stats"></p>
+
+<div class="chart-wrap" id="chart-wrap">
+  <div id="loading">正在生成 100,000 条数据并渲染...</div>
+  <div id="chart"></div>
+</div>
+
+<div class="color-legend">
+  <span>小分配</span>
+  <div class="color-bar"></div>
+  <span>大分配</span>
+</div>
+
+<div class="size-control">
+  <label>显示数量:</label>
+  <input type="range" id="size-slider" min="20" max="100000" value="500" step="1">
+  <button class="size-btn" id="size-minus">−</button>
+  <input type="number" id="size-input" min="20" max="100000" value="500">
+  <button class="size-btn" id="size-plus">+</button>
+  <span class="range-label" id="size-label">#0 – #499</span>
+</div>
+
+<div class="detail-panel" id="detail"></div>
+
+<script>
+// ============================================================
+// 1. 配置
+// ============================================================
+var TOTAL_TIME = 1000;
+var NUM_ALLOCATIONS = 100000;
+var STEP = 5;
+
+// ============================================================
+// 2. 生成10万条分配记录并按起始时间排序
+// ============================================================
+var allocations = [];
+for (var i = 0; i < NUM_ALLOCATIONS; i++) {
+  var start = Math.round(Math.random() * TOTAL_TIME * 0.9 * 10) / 10;
+  var duration = 5 + Math.random() * 150;
+  var end = Math.min(Math.round((start + duration) * 10) / 10, TOTAL_TIME);
+  var size = Math.round(10 + Math.random() * 4090);
+  allocations.push({ name: 'alloc_' + String(i).padStart(6, '0'), start: start, end: end, size: size });
+}
+allocations.sort(function(a, b) { return a.start - b.start || a.end - b.end; });
+
+var minSize = Infinity, maxSize = -Infinity;
+allocations.forEach(function(a) {
+  if (a.size < minSize) minSize = a.size;
+  if (a.size > maxSize) maxSize = a.size;
+});
+var sizeRange = maxSize - minSize || 1;
+
+function sizeColor(size) {
+  var t = (size - minSize) / sizeRange;
+  var r, g, b;
+  if (t < 0.5) {
+    var t2 = t * 2;
+    r = Math.round(74 + t2 * (230 - 74));
+    g = Math.round(144 + t2 * (162 - 144));
+    b = Math.round(217 + t2 * (60 - 217));
+  } else {
+    var t2 = (t - 0.5) * 2;
+    r = Math.round(230 + t2 * (217 - 230));
+    g = Math.round(162 + t2 * (74 - 162));
+    b = Math.round(60 + t2 * (74 - 60));
+  }
+  return 'rgb(' + r + ',' + g + ',' + b + ')';
+}
+
+document.getElementById('stats').textContent =
+  '共 ' + NUM_ALLOCATIONS.toLocaleString() + ' 条分配记录 | 时间范围 0–' + TOTAL_TIME + ' ms | 按 start 排序';
+
+// ============================================================
+// 3. 折线图数据（sweep-line）
+// ============================================================
+var events = [];
+for (var i = 0; i < NUM_ALLOCATIONS; i++) {
+  events.push({ time: allocations[i].start, delta: allocations[i].size });
+  events.push({ time: allocations[i].end, delta: -allocations[i].size });
+}
+events.sort(function(a, b) { return a.time - b.time; });
+
+var timePoints = [];
+var memValues = [];
+var currentMem = 0;
+var eventIdx = 0;
+
+for (var t = 0; t <= TOTAL_TIME; t += STEP) {
+  while (eventIdx < events.length && events[eventIdx].time <= t) {
+    currentMem += events[eventIdx].delta;
+    eventIdx++;
+  }
+  timePoints.push(t);
+  memValues.push(Math.max(0, Math.round(currentMem)));
+}
+
+// ============================================================
+// 4. 全量甘特图数据
+// ============================================================
+var ganttData = [];
+for (var i = 0; i < NUM_ALLOCATIONS; i++) {
+  ganttData.push({
+    value: [allocations[i].start, allocations[i].end, i, i],
+    itemStyle: { color: sizeColor(allocations[i].size) }
+  });
+}
+
+// ============================================================
+// 5. 初始化 ECharts
+//    grid 0: 折线图
+//    grid 1: 共享时间轴
+//    grid 2: 甘特图
+//    grid 3: 虚拟 grid，用于纵向范围滑块（横向双手柄）
+// ============================================================
+var chart = echarts.init(document.getElementById('chart'), 'dark');
+
+var yMin = -0.5;
+var yMax = 499.5;
+var INIT_Y_START = 0;
+var INIT_Y_END = 500;
+
+chart.setOption({
+  backgroundColor: 'transparent',
+
+  axisPointer: { link: [{ xAxisIndex: [0, 1, 2] }] },
+
+  title: [
+    { text: '内存使用趋势', left: 'center', top: 8, textStyle: { fontSize: 14, color: '#e6edf3' } },
+    { text: '分配块生命周期 — ' + NUM_ALLOCATIONS.toLocaleString() + ' 条（滚轮纵向滚动 | 点击查看详情）',
+      left: 'center', top: '53%', textStyle: { fontSize: 14, color: '#e6edf3' } }
+  ],
+
+  tooltip: {
+    trigger: 'axis',
+    axisPointer: { type: 'cross', crossStyle: { color: '#484f58' } },
+    formatter: function(params) {
+      if (!params || !params.length) return '';
+      var t = params[0].axisValue;
+      var html = '<b>时间: ' + t + ' ms</b><br/>';
+      params.forEach(function(p) {
+        if (p.seriesName === '总内存') {
+          var val = p.value[1];
+          var sizeStr = val >= 1024 ? (val / 1024).toFixed(1) + ' GB' : val.toLocaleString() + ' MB';
+          html += '总内存: <b>' + sizeStr + '</b><br/>';
+        }
+      });
+      return html;
+    }
+  },
+
+  grid: [
+    { left: 80, right: 50, top: 50, height: '27%' },
+    { left: 80, right: 50, top: '39.5%', height: '3%' },
+    { left: 80, right: 50, top: '48%', height: '42%' },
+    { left: 80, right: 50, top: '93%', height: '2%' }
+  ],
+
+  xAxis: [
+    {
+      type: 'value', gridIndex: 0, min: 0, max: TOTAL_TIME,
+      axisLabel: { show: false }, axisTick: { show: false },
+      axisLine: { show: false }, splitLine: { show: false }
+    },
+    {
+      type: 'value', gridIndex: 1, min: 0, max: TOTAL_TIME,
+      name: '时间 (ms)', nameLocation: 'center', nameGap: 22,
+      nameTextStyle: { color: '#e6edf3', fontSize: 12, fontWeight: 600 },
+      axisLabel: { color: '#c9d1d9', fontSize: 11 },
+      axisLine: { lineStyle: { color: '#484f58', width: 2 }, onZero: false },
+      axisTick: { lineStyle: { color: '#484f58' } },
+      splitLine: { show: false }
+    },
+    {
+      type: 'value', gridIndex: 2, min: 0, max: TOTAL_TIME,
+      axisLabel: { show: false }, axisTick: { show: false },
+      axisLine: { show: false },
+      splitLine: { lineStyle: { color: '#21262d', type: 'dashed' } }
+    },
+    {
+      type: 'value', gridIndex: 3, min: 0, max: NUM_ALLOCATIONS,
+      axisLabel: {
+        color: '#8b949e', fontSize: 10,
+        formatter: function(v) { return '#' + Math.round(v); }
+      },
+      axisLine: { lineStyle: { color: '#30363d' } },
+      axisTick: { show: false },
+      splitLine: { show: false }
+    }
+  ],
+
+  yAxis: [
+    {
+      type: 'value', gridIndex: 0, name: '内存 (MB)',
+      nameTextStyle: { color: '#8b949e' },
+      axisLabel: {
+        color: '#8b949e', fontSize: 11,
+        formatter: function(v) { return v >= 1024 ? (v / 1024).toFixed(1) + ' GB' : v + ' MB'; }
+      },
+      axisLine: { lineStyle: { color: '#30363d' } },
+      splitLine: { lineStyle: { color: '#21262d', type: 'dashed' } }
+    },
+    { type: 'value', gridIndex: 1, show: false, min: 0, max: 1 },
+    {
+      type: 'value', gridIndex: 2, min: yMin, max: yMax, inverse: true,
+      axisLabel: {
+        color: '#8b949e', fontSize: 9,
+        formatter: function(v) { return '#' + Math.round(v); }
+      },
+      axisLine: { lineStyle: { color: '#30363d' } },
+      splitLine: { show: false },
+      minInterval: 1
+    },
+    { type: 'value', gridIndex: 3, show: false, min: 0, max: 1 }
+  ],
+
+  dataZoom: [
+    {
+      id: 'timeZoom',
+      type: 'slider',
+      xAxisIndex: [0, 1, 2],
+      bottom: 38, height: 25,
+      left: 80, right: 50,
+      borderColor: '#30363d',
+      fillerColor: 'rgba(74, 144, 217, 0.2)',
+      handleStyle: { color: '#4A90D9' },
+      textStyle: { color: '#8b949e' }
+    },
+    {
+      id: 'taskZoom',
+      type: 'slider',
+      xAxisIndex: 3,
+      bottom: 8, height: 25,
+      left: 80, right: 50,
+      borderColor: '#30363d',
+      fillerColor: 'rgba(88, 166, 255, 0.2)',
+      handleStyle: { color: '#58a6ff' },
+      textStyle: { color: '#8b949e', fontSize: 10 },
+      labelFormatter: function(v) { return '#' + Math.round(v); },
+      startValue: INIT_Y_START,
+      endValue: INIT_Y_END
+    }
+  ],
+
+  series: [
+    {
+      name: '总内存', type: 'line', symbol: 'none',
+      lineStyle: { width: 1.5, color: '#4A90D9' },
+      areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+        { offset: 0, color: 'rgba(74, 144, 217, 0.4)' },
+        { offset: 1, color: 'rgba(74, 144, 217, 0.05)' }
+      ])},
+      data: memValues.map(function(v, i) { return [timePoints[i], v]; }),
+      xAxisIndex: 0, yAxisIndex: 0, z: 10
+    },
+    {
+      type: 'custom', xAxisIndex: 2, yAxisIndex: 2,
+      renderItem: function(params, api) {
+        var start = api.value(0);
+        var end = api.value(1);
+        var yIdx = api.value(2);
+
+        var startCoord = api.coord([start, yIdx]);
+        var endCoord = api.coord([end, yIdx]);
+        var barHeight = api.size([0, 1])[1];
+        if (barHeight < 0.5) barHeight = 0.5;
+
+        var rect = {
+          x: startCoord[0],
+          y: startCoord[1] - barHeight / 2,
+          width: Math.max(endCoord[0] - startCoord[0], 0.5),
+          height: barHeight
+        };
+
+        var clippedRect = echarts.graphic.clipRectByRect(rect, {
+          x: params.coordSys.x, y: params.coordSys.y,
+          width: params.coordSys.width, height: params.coordSys.height
+        });
+
+        if (!clippedRect) return;
+
+        return {
+          type: 'rect',
+          shape: clippedRect,
+          style: { fill: api.visual('color') },
+          emphasis: {
+            style: {
+              stroke: '#e6edf3', lineWidth: 2,
+              shadowBlur: 6, shadowColor: 'rgba(230,237,243,0.3)'
+            }
+          }
+        };
+      },
+      encode: { x: [0, 1], y: 2 },
+      data: ganttData,
+      progressive: 2000,
+      progressiveThreshold: 1000
+    }
+  ]
+});
+
+// ============================================================
+// 6. taskZoom 滑块变化 → 更新甘特图 y 轴范围 + 同步显示数量控件
+// ============================================================
+var syncing = false;
+
+function getTaskZoom() {
+  var opt = chart.getOption();
+  var dzArr = opt.dataZoom;
+  for (var i = 0; i < dzArr.length; i++) {
+    if (dzArr[i].id === 'taskZoom') return dzArr[i];
+  }
+  return null;
+}
+
+function updateSizeUI(sv, ev) {
+  var size = Math.round(ev - sv);
+  document.getElementById('size-slider').value = size;
+  document.getElementById('size-input').value = size;
+  document.getElementById('size-label').textContent =
+    '#' + Math.round(sv) + ' – #' + Math.round(ev - 1);
+}
+
+chart.on('datazoom', function() {
+  if (syncing) return;
+  var dz = getTaskZoom();
+  if (!dz) return;
+  var sv = dz.startValue;
+  var ev = dz.endValue;
+  if (typeof sv !== 'number' || typeof ev !== 'number') return;
+
+  syncing = true;
+  chart.setOption({
+    yAxis: [{}, {}, { min: sv - 0.5, max: ev - 0.5 }]
+  });
+  syncing = false;
+  updateSizeUI(sv, ev);
+});
+
+// ============================================================
+// 7. 显示数量控件
+// ============================================================
+var sizeSlider = document.getElementById('size-slider');
+var sizeInput = document.getElementById('size-input');
+
+function applySize(newSize) {
+  newSize = Math.max(20, Math.min(NUM_ALLOCATIONS, Math.round(parseInt(newSize) || 500)));
+  var dz = getTaskZoom();
+  if (!dz) return;
+  var sv = Math.round(dz.startValue);
+  var ev = Math.round(dz.endValue);
+  ev = sv + newSize;
+  if (ev > NUM_ALLOCATIONS) { ev = NUM_ALLOCATIONS; sv = ev - newSize; }
+  if (sv < 0) { sv = 0; ev = newSize; }
+
+  chart.dispatchAction({
+    type: 'dataZoom',
+    dataZoomIndex: 1,
+    startValue: sv,
+    endValue: ev
+  });
+}
+
+sizeSlider.addEventListener('input', function() {
+  sizeInput.value = this.value;
+  applySize(this.value);
+});
+
+sizeInput.addEventListener('change', function() {
+  var v = Math.max(20, Math.min(NUM_ALLOCATIONS, parseInt(this.value) || 500));
+  this.value = v;
+  sizeSlider.value = v;
+  applySize(v);
+});
+
+function makeRepeatable(btnId, action) {
+  var btn = document.getElementById(btnId);
+  var timer = null;
+  var interval = null;
+
+  function start() {
+    action();
+    timer = setTimeout(function() {
+      interval = setInterval(action, 80);
+    }, 400);
+  }
+
+  function stop() {
+    clearTimeout(timer);
+    clearInterval(interval);
+    timer = null;
+    interval = null;
+  }
+
+  btn.addEventListener('mousedown', start);
+  btn.addEventListener('mouseup', stop);
+  btn.addEventListener('mouseleave', stop);
+  btn.addEventListener('touchstart', function(e) { e.preventDefault(); start(); });
+  btn.addEventListener('touchend', stop);
+  btn.addEventListener('touchcancel', stop);
+}
+
+makeRepeatable('size-minus', function() {
+  var cur = parseInt(sizeInput.value) || 500;
+  var step = cur > 1000 ? 500 : cur > 100 ? 50 : 10;
+  var v = Math.max(20, cur - step);
+  sizeInput.value = v;
+  sizeSlider.value = v;
+  applySize(v);
+});
+
+makeRepeatable('size-plus', function() {
+  var cur = parseInt(sizeInput.value) || 500;
+  var step = cur > 1000 ? 500 : cur > 100 ? 50 : 10;
+  var v = Math.min(NUM_ALLOCATIONS, cur + step);
+  sizeInput.value = v;
+  sizeSlider.value = v;
+  applySize(v);
+});
+
+// ============================================================
+// 8. 滚轮不拦截，允许正常滚动页面
+// ============================================================
+
+// ============================================================
+// 8. 点击详情
+// ============================================================
+var detailEl = document.getElementById('detail');
+
+chart.on('click', function(params) {
+  if (params.seriesType === 'custom') {
+    var globalIdx = params.value[3];
+    var a = allocations[globalIdx];
+    if (!a) return;
+    var dur = (a.end - a.start).toFixed(1);
+    var sizeStr = a.size >= 1024 ? (a.size / 1024).toFixed(1) + ' GB' : a.size + ' MB';
+    detailEl.innerHTML =
+      '<div class="detail-title">' + a.name + '</div>' +
+      '<span class="row"><span class="label">大小:</span><span class="value">' + sizeStr + '</span></span>' +
+      '<span class="row"><span class="label">起始:</span><span class="value">' + a.start + ' ms</span></span>' +
+      '<span class="row"><span class="label">结束:</span><span class="value">' + a.end + ' ms</span></span>' +
+      '<span class="row"><span class="label">持续:</span><span class="value">' + dur + ' ms</span></span>' +
+      '<span class="row"><span class="label">序号:</span><span class="value">#' + globalIdx + '</span></span>';
+    detailEl.className = 'detail-panel visible';
+  }
+});
+
+document.getElementById('loading').style.display = 'none';
+window.addEventListener('resize', function() { chart.resize(); });
+</script>
+</body>
+</html>
