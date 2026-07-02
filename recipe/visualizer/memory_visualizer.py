@@ -117,7 +117,7 @@ class MemoryVisualizer(BaseVisualizer):
 
     def _generate_single_timeline(self, data: pd.DataFrame, role, rank_id):
         """Generate memory timeline HTML for a single (role, rank_id) group."""
-        data = data.copy()
+        data = data.sort_values("start_time_ms").copy()
 
         data["end_time_ms"] = data["start_time_ms"] + data["duration_ms"]
         data["size_mb"] = data["size_kb"] * self._KB_TO_MB
@@ -128,8 +128,7 @@ class MemoryVisualizer(BaseVisualizer):
             rank_prefix = None
 
         # ── Global time range ─────────────────────────────────────────
-        # data is pre-sorted by start_time_ms
-        t_min_abs = float(data["start_time_ms"].iloc[0])
+        t_min_abs = float(data["start_time_ms"].min())
         t_max_abs = float((data["start_time_ms"] + data["duration_ms"]).max())
         logger.info(
             f"Time range: {t_min_abs:.0f} – {t_max_abs:.0f} ms "

@@ -592,6 +592,11 @@ class AscendMemoryFieldValidRule(ValidationRule):
                 # profiler_metadata.json — valid JSON (role is optional:
                 # the parser falls back to the parent directory name)
                 metadata_path = ascend_pt_path / "profiler_metadata.json"
+                if not metadata_path.exists():
+                    self._error_message = (
+                        f"profiler_metadata.json does not exist in: {ascend_pt_path}"
+                    )
+                    return False
                 if metadata_path.stat().st_size == 0:
                     self._error_message = f"File is empty: {metadata_path}"
                     return False
@@ -608,6 +613,11 @@ class AscendMemoryFieldValidRule(ValidationRule):
 
                 # operator_memory.csv — required columns + at least one row
                 csv_path = output_dir / "operator_memory.csv"
+                if not csv_path.exists():
+                    self._error_message = (
+                        f"operator_memory.csv does not exist in: {output_dir}"
+                    )
+                    return False
                 if csv_path.stat().st_size == 0:
                     self._error_message = f"File is empty: {csv_path}"
                     return False
@@ -635,6 +645,11 @@ class AscendMemoryFieldValidRule(ValidationRule):
 
                 # trace_view.json — non-empty array (streamed via ijson)
                 trace_view_path = output_dir / "trace_view.json"
+                if not trace_view_path.exists():
+                    self._error_message = (
+                        f"trace_view.json does not exist in: {output_dir}"
+                    )
+                    return False
                 if trace_view_path.stat().st_size == 0:
                     self._error_message = f"File is empty: {trace_view_path}"
                     return False

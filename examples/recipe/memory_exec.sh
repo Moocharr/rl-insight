@@ -14,15 +14,17 @@ echo "Output Path:   ${OUTPUT_PATH}"
 echo "Rank List:     ${RANK_LIST}"
 echo "=========================================="
 
-cmd="python -m recipe.main \
-    input.path=\"${MEMORY_DATA_PATH}\" \
-    output.path=\"${OUTPUT_PATH}\" \
-    input.rank_list=\"${RANK_LIST}\" \
-    memory.parser.type=memory \
-    memory.visualizer.type=memory_html"
+cmd=(
+    python -m recipe.main
+    input.path="${MEMORY_DATA_PATH}"
+    output.path="${OUTPUT_PATH}"
+    input.rank_list="${RANK_LIST}"
+    memory.parser.type=memory
+    memory.visualizer.type=memory_html
+)
 
 echo ">>> Generating memory allocation timeline..."
-eval ${cmd}
+"${cmd[@]}"
 
 if ls ${OUTPUT_PATH}/memory_timeline_*.html 1> /dev/null 2>&1; then
     echo "=========================================="

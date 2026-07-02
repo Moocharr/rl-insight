@@ -60,12 +60,16 @@ h1 { text-align: center; margin-bottom: 10px; font-size: 20px; }
   };
 })();
 var T_MIN = 0;
-var T_MAX = GANTT_STARTS[GANTT_STARTS.length-1] + GANTT_DURS[GANTT_DURS.length-1];
-var currentRange = [T_MIN, T_MAX];
-
-// ── 预计算 end 数组（避免重复加法）────────────────────────
+// ── 预计算 end 数组并计算真实最大结束时间（避免假设最后一个 start 即最大 end）──
 var _ganttEnds = new Array(GANTT_STARTS.length);
-for (var k=0; k<GANTT_STARTS.length; k++) _ganttEnds[k] = GANTT_STARTS[k] + GANTT_DURS[k];
+var T_MAX = 0;
+for (var k = 0; k < GANTT_STARTS.length; k++) {
+  _ganttEnds[k] = GANTT_STARTS[k] + GANTT_DURS[k];
+  if (_ganttEnds[k] > T_MAX) {
+    T_MAX = _ganttEnds[k];
+  }
+}
+var currentRange = [T_MIN, T_MAX];
 
 // ── 二分查找工具（在已升序数组上）────────────────────────
 function lowerBound(arr, val) {
@@ -340,8 +344,10 @@ function buildCharts(range) {
           plotSerial(function() {
             var g2 = document.getElementById('chart');
             if (!g2 || !g2.data || !g2.data.length) return Promise.resolve();
-            return Plotly.react('chart', [g2.data[0]].concat(newGantt), g2.layout, g2.config);
-          }).then(function() { isSyncing = prevSync; });
+            return Plotly.react('chart', [g2.data[0]].concat(newGantt), g2.layout, g2.config).then(function() {
+              isSyncing = prevSync;
+            });
+          });
         }, 80);
       } else {
         // ── 折线区：缩放横轴 ──
@@ -371,8 +377,10 @@ function buildCharts(range) {
         plotSerial(function() {
           var g = document.getElementById('chart');
           if (!g || !g._fullLayout) return Promise.resolve();
-          return Plotly.relayout('chart', { 'xaxis.range': newRange });
-        }).then(function() { isSyncing = false; });
+          return Plotly.relayout('chart', { 'xaxis.range': newRange }).then(function() {
+            isSyncing = false;
+          });
+        });
         scheduleAfterRelayout();
       }
     }, { passive: false });
@@ -433,8 +441,10 @@ function buildCharts(range) {
         plotSerial(function() {
           var g2 = document.getElementById('chart');
           if (!g2 || !g2.data || !g2.data.length) return Promise.resolve();
-          return Plotly.react('chart', [g2.data[0]].concat(newGantt), g2.layout, g2.config);
-        }).then(function() { isSyncing = prevSync; });
+          return Plotly.react('chart', [g2.data[0]].concat(newGantt), g2.layout, g2.config).then(function() {
+            isSyncing = prevSync;
+          });
+        });
       }, 80);
     });
 
@@ -648,8 +658,10 @@ function relayoutGanttWindow() {
         'yaxis2.range': [hi + 0.5, lo - 0.5],
         'yaxis2.tickvals': yVals,
         'yaxis2.ticktext': yTexts
+      }).then(function() {
+        isSyncing = prevSync;
       });
-    }).then(function() { isSyncing = prevSync; });
+    });
     _relayoutRetry = 0;
   } else if (_relayoutRetry < 10) {
     // _fullLayout.yaxis2 未就绪（newPlot/react 仍在进行）：下一帧重试，保证行号刻度始终刷新，
@@ -691,10 +703,10 @@ function applyGanttView(skipReact) {
       plotSerial(function() {
         var g = document.getElementById('chart');
         if (!g || !g.data || !g.data.length) return Promise.resolve();
-        return Plotly.react('chart', [g.data[0]].concat(newGantt), g.layout, g.config);
-      }).then(function() {
-        isSyncing = prevSync;
-        relayoutGanttWindow();
+        return Plotly.react('chart', [g.data[0]].concat(newGantt), g.layout, g.config).then(function() {
+          isSyncing = prevSync;
+          relayoutGanttWindow();
+        });
       });
       return;  // relayout 已在 then 中执行，避免重复调用
     }
@@ -742,9 +754,9 @@ ganttScroll.addEventListener('scroll', function() {
     plotSerial(function() {
       var g = document.getElementById('chart');
       if (!g || !g.data || !g.data.length) return Promise.resolve();
-      return Plotly.react('chart', [g.data[0]].concat(newGantt), g.layout, g.config);
-    }).then(function() {
-      isSyncing = prevSync;
+      return Plotly.react('chart', [g.data[0]].concat(newGantt), g.layout, g.config).then(function() {
+        isSyncing = prevSync;
+      });
     });
   }, 80);
 });
